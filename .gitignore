@@ -1,0 +1,4 @@
+loopwatch.conf
+state/logs/
+state/failed/
+state/.lock/

@@ -1,0 +1,10 @@
+{
+  "name": "loopwatch",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu-24.04",
+  "postCreateCommand": "sudo apt-get update -qq && sudo apt-get install -y -qq jq shellcheck && ./bin/smoke-test.sh",
+  "customizations": {
+    "vscode": {
+      "extensions": ["timonwong.shellcheck", "redhat.vscode-yaml"]
+    }
+  }
+}
