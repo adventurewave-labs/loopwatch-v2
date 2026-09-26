@@ -43,6 +43,13 @@ MAX_BUNDLE_KB=300            # whole-bundle cap; oldest content is trimmed first
 ACTIVITY_MIN_BYTES=2000      # below this much real content, no model call at all (provisional default)
 SKIP_EMPTY=true
 
+# ── Telemetry (optional) ─────────────────────────────────────────────────
+# Each run as an OTLP/JSON trace using the OpenTelemetry GenAI semantic conventions
+# (gen_ai.request.model, gen_ai.usage.input_tokens, ...). Counts and costs only, no content.
+OTEL_EXPORT_DIR=""                     # e.g. "$HOME/.local/state/loopwatch/otel": one file per run
+# OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:4318"   # also POST to a collector (/v1/traces)
+# OTEL_EXPORTER_OTLP_HEADERS="x-api-key=..."
+
 # ── Publish (R-9) ────────────────────────────────────────────────────────
 # Each run commits to loopwatch/<date> in the catalog repo and opens a PR; while a
 # loopwatch PR is open, later runs add to it. Nothing is ever pushed to CATALOG_BASE.

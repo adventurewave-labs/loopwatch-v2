@@ -50,7 +50,7 @@ claude_supports() {
 CLAUDE_LAST_SUBTYPE=""
 run_claude() {
   local stage="$1" model="$2" sys_file="$3" input_file="$4" schema_file="$5" budget="$6"
-  local out="$RUN_DIR/$stage.json" err="$RUN_DIR/$stage.err" rc
+  local out="$RUN_DIR/$stage.json" err="$RUN_DIR/$stage.err" rc t0
   local -a args
   args=(-p --model "$model" --output-format json --tools ""
         --system-prompt "$(cat "$sys_file")"
@@ -63,6 +63,7 @@ run_claude() {
     args+=($CLAUDE_EXTRA_ARGS)
   fi
 
+  t0="$(now_epoch)"
   set +e
   ( cd "$RUN_DIR" && MAX_THINKING_TOKENS="${THINKING_TOKENS:-0}" "$CLAUDE_BIN" "${args[@]}" ) < "$input_file" > "$out" 2> "$err"
   rc=$?
@@ -72,8 +73,8 @@ run_claude() {
 
   # Parse usage tolerantly: a non-JSON stdout (old CLI, crash) records nulls.
   local rec
-  rec="$(jq -c --arg stage "$stage" --arg model "$model" --argjson rc "$rc" '
-      {stage: $stage, model: $model, rc: $rc,
+  rec="$(jq -c --arg stage "$stage" --arg model "$model" --argjson rc "$rc" --argjson t0 "$t0" '
+      {stage: $stage, model: $model, rc: $rc, start_s: $t0,
        in: (((.usage.input_tokens // 0) + (.usage.cache_creation_input_tokens // 0))),
        cached: (.usage.cache_read_input_tokens // 0),
        out: (.usage.output_tokens // 0),
@@ -82,8 +83,8 @@ run_claude() {
        is_error: (.is_error // ($rc != 0)),
        subtype: (.subtype // "")}' "$out" 2>/dev/null || true)"
   if [[ -z "$rec" ]]; then
-    rec="$(jq -nc --arg stage "$stage" --arg model "$model" --argjson rc "$rc" \
-      '{stage: $stage, model: $model, rc: $rc, in: 0, cached: 0, out: 0, cost_usd: 0,
+    rec="$(jq -nc --arg stage "$stage" --arg model "$model" --argjson rc "$rc" --argjson t0 "$t0" \
+      '{stage: $stage, model: $model, rc: $rc, start_s: $t0, in: 0, cached: 0, out: 0, cost_usd: 0,
         duration_ms: 0, is_error: ($rc != 0), subtype: "unparsed_output"}')"
   fi
   printf '%s\n' "$rec" >> "$USAGE_FILE"
@@ -99,8 +100,9 @@ ledger_append() {
   local status="$1" skipped_reason="$2" pages="${3:-0}"
   local usage="${USAGE_FILE:-/dev/null}" wall_ms
   wall_ms=$(( ($(now_epoch) - RUN_START) * 1000 ))
+  local row
   mkdir -p "$(dirname "$LEDGER")"
-  jq -sc \
+  row="$(jq -sc \
     --arg ts "$(now_local_iso)" \
     --arg target "$RUN_TARGET" \
     --arg run_id "$RUN_TS" \
@@ -129,5 +131,8 @@ ledger_append() {
       validator_drops: $vdrops,
       stage_b_skipped: (if $sbskip == "" then null else $sbskip end),
       stages: map({stage, model, cost_usd, in, cached, out, subtype})
-    }' "$usage" >> "$LEDGER"
+    }' "$usage")" || return 1
+  printf '%s\n' "$row" >> "$LEDGER"
+  # optional OpenTelemetry GenAI export (lib/otel.sh); never fails the run
+  if declare -F otel_export >/dev/null; then otel_export "$row" || true; fi
 }

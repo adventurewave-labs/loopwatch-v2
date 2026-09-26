@@ -42,6 +42,9 @@ source "$CONF"
 : "${GITHUB_AUTHOR:=}"
 : "${EXPORT_MD_DIR:=}"
 : "${EXPORT_DIGEST_TO:=}"
+: "${OTEL_EXPORT_DIR:=}"
+: "${OTEL_EXPORTER_OTLP_ENDPOINT:=}"
+: "${OTEL_EXPORTER_OTLP_HEADERS:=}"
 # default scopes only when the conf does not mention GITHUB_SCOPES at all;
 # GITHUB_SCOPES=() in the conf turns the GitHub source off
 if ! declare -p GITHUB_SCOPES >/dev/null 2>&1; then
@@ -81,6 +84,8 @@ LOG="$STATE_DIR/logs/$RUN_TS.log"
 
 # shellcheck disable=SC1091
 source "$ROOT_DIR/lib/common.sh"
+# shellcheck disable=SC1091
+source "$ROOT_DIR/lib/otel.sh"
 
 # dependency preflight
 for dep in jq git; do

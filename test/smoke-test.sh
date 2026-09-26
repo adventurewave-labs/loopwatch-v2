@@ -616,5 +616,61 @@ grep -q "^FAIL.*PUBLIC" "$W/pf.txt" || fail "200 not explained"
 if STUB_HTTP_CODE=000 pf; then fail "no answer must fail closed"; fi
 ok "401 passes, 503 warns, 200 and no-answer fail"
 
+# ═════════════════════════════════════════════════════════════════════════
+setup "OpenTelemetry GenAI export: OTLP/JSON trace per run, file + collector, no content"
+lw --dry-run
+[[ ! -d "$LW_STATE/otel" ]] || fail "export must be off by default"
+conf "OTEL_EXPORT_DIR=\"$W/otel\""
+conf 'OTEL_EXPORTER_OTLP_ENDPOINT="http://collector.test:4318/"'
+conf 'OTEL_EXPORTER_OTLP_HEADERS="x-api-key=k123,x-team=lw"'
+mkdir -p "$W/bin"
+cat > "$W/bin/curl" <<'EOF2'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "$OTEL_CURL_ARGS"; cat > "$OTEL_CURL_BODY"; printf '200'
+EOF2
+chmod +x "$W/bin/curl"
+export OTEL_CURL_ARGS="$W/curl-args" OTEL_CURL_BODY="$W/curl-body"
+echo '{"type":"user","cwd":"/Users/dev/src/turbo-flow","message":{"role":"user","content":"OTEL-CONTENT-MARKER decided to shard the ingest queue by tenant because hot tenants starved the rest; tradeoff is more consumers."}}' >> "$TX"
+PATH="$W/bin:$PATH" lw --dry-run
+run_id="$(ledger_last | jq -r .run_id)"
+[[ -n "${OTEL_PROTO_CHECK:-}" ]] && cp "$W/otel/$run_id.otlp.json" "$OTEL_PROTO_CHECK"
+F="$W/otel/$run_id.otlp.json"
+[[ -f "$F" ]] || fail "no OTLP file for run $run_id: $(ls "$W/otel" 2>&1)"
+jq -e '
+  .resourceSpans[0] as $rs
+  | ($rs.resource.attributes | map({(.key): .value.stringValue}) | add | .["service.name"] == "loopwatch")
+  and ($rs.scopeSpans[0].spans | length == 3)
+  and ($rs.scopeSpans[0].spans[0] | .name == "loopwatch run" and (.traceId | test("^[0-9a-f]{32}$")) and (.spanId | test("^[0-9a-f]{16}$")))
+  and ([$rs.scopeSpans[0].spans[1:][] | .parentSpanId] | unique == [$rs.scopeSpans[0].spans[0].spanId])
+  and ([$rs.scopeSpans[0].spans[].traceId] | unique | length == 1)
+  and ([$rs.scopeSpans[0].spans[1:][] | .name] == ["chat haiku", "chat sonnet"])
+  and ([$rs.scopeSpans[0].spans[1:][] | .kind] == [3, 3])' "$F" >/dev/null || fail "bad OTLP structure: $(jq -c '.resourceSpans[0].scopeSpans[0].spans | map({name, kind})' "$F")"
+a() { jq -r --arg k "$1" --argjson i "$2" '.resourceSpans[0].scopeSpans[0].spans[$i].attributes[] | select(.key == $k) | .value | to_entries[0].value | tostring' "$F"; }
+[[ "$(a gen_ai.operation.name 1)" == chat && "$(a gen_ai.provider.name 1)" == anthropic && "$(a gen_ai.request.model 1)" == haiku ]] || fail "gen_ai identity attributes"
+[[ "$(a gen_ai.usage.input_tokens 1)" == 6500 && "$(a gen_ai.usage.output_tokens 1)" == 800 && "$(a gen_ai.usage.cache_read.input_tokens 1)" == 5000 ]] \
+  || fail "gen_ai usage attributes: in=$(a gen_ai.usage.input_tokens 1) out=$(a gen_ai.usage.output_tokens 1)"
+[[ "$(a loopwatch.cost_usd 0)" == "$(ledger_last | jq -r .cost_usd)" ]] || fail "root cost differs from ledger"
+jq -e '.resourceSpans[0].scopeSpans[0].spans[1].attributes[] | select(.key == "gen_ai.usage.input_tokens") | .value.intValue | type == "string"' "$F" >/dev/null || fail "OTLP int64 values must be JSON strings"
+if grep -q "OTEL-CONTENT-MARKER\|shard the ingest" "$F"; then fail "transcript content leaked into telemetry"; fi
+grep -qx "http://collector.test:4318/v1/traces" "$OTEL_CURL_ARGS" || fail "collector URL: $(cat "$OTEL_CURL_ARGS")"
+grep -qx "x-api-key: k123" "$OTEL_CURL_ARGS" || fail "OTLP header 1 not sent"
+grep -qx "x-team: lw" "$OTEL_CURL_ARGS" || fail "OTLP header 2 (last in the list) not sent"
+cmp -s <(jq -c . "$F") <(jq -c . "$OTEL_CURL_BODY") || fail "collector got a different payload"
+ok "3 spans (run + chat haiku + chat sonnet), gen_ai.* usage, file and collector agree, no content"
+
+rm -rf "$W/otel"
+echo '{"type":"user","cwd":"/Users/dev/src/turbo-flow","message":{"role":"user","content":"second delta so the run is not skipped: pinned the batch pool to spot with a PDB of 1 because evictions stalled ingest."}}' >> "$TX"
+printf '#!/usr/bin/env bash\ncat >/dev/null; printf 503\n' > "$W/bin/curl"
+export STUB_FAIL=crash
+PATH="$W/bin:$PATH" lw --dry-run || true
+unset STUB_FAIL
+F="$(ls "$W"/otel/*.otlp.json | head -1)"
+jq -e '.resourceSpans[0].scopeSpans[0].spans | .[0].status.code == 2 and .[1].status.code == 2
+       and (.[1].attributes | map(select(.key == "error.type")) | length == 1)' "$F" >/dev/null \
+  || fail "a failed run must export error status: $(jq -c '.resourceSpans[0].scopeSpans[0].spans | map({name, status})' "$F")"
+grep -q "WARN: OTLP export to collector returned 503" "$LWLOG" || fail "collector failure should warn"
+[[ "$(ledger_last | jq -r .status)" == failed ]] || fail "collector failure must not change the run outcome"
+ok "failed run exports error status; collector 503 only warns"
+
 echo
 echo "PASS — $N_CASES cases green"
