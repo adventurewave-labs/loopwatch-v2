@@ -13,3 +13,14 @@ The improvement loop works from this file (a 15-minute cadence for an hour, 2026
 | 7 | **Catalog search upgrade.** Ranked client-side search (BM25-style scoring over title, summary and tags, with prefix matching), highlighted matches, and `/`-driven keyboard navigation | Better "three months later" recall without a server | todo |
 | 8 | **Prompt caching of the static system prompt.** Measure whether a stable system prompt plus `--exclude-dynamic-system-prompt-sections` raises cache hits across the two calls and consecutive nights | The fixed per-call floor (~$0.013–0.018) is mostly prompt-cache creation | todo (measure first) |
 | 9 | **Model fallback.** `--fallback-model` for overload (for example sonnet → haiku for the writer), recorded in the ledger | Nightly runs shouldn't fail on transient overload | todo |
+
+## Independent review after round 4
+
+A separate reviewer, who had not seen the work, checked everything the loop added (`railway-catalog..sota-improvements`) and reproduced each finding before reporting it. All fixed in `a9cf220`, each with a regression test that fails against the pre-fix code:
+
+- **Fence escape (medium).** Only exact lowercase `</tag>` was neutralized. Now every open or close form, in any case or spacing, is neutralized in both model inputs.
+- **OTLP credential in argv (medium).** Headers now go through a 0600 file (`curl -H @file`), parsed per the OTel spec (whitespace trimmed, values percent-decoded). Ambient `OTEL_*` variables from the shell are ignored.
+- **Unrecoverable near-duplicate drops (medium).** Dropped pages are now kept in `private/near-dups/<run>`.
+- **One malformed writer page aborted the run (low-medium).** A bad page is now dropped alone. On a duplicate slug the first page wins everywhere: HTML, manifest and ledger.
+- **Tool isolation depended on optional flags (low).** `--strict-mcp-config`, `--tools`, `--json-schema` and `--system-prompt` are now required; a CLI without them fails closed before any model call.
+- **Tests (low).** Removed a vacuous assertion. The eval's validator loop now fails if the validator itself can't run.
