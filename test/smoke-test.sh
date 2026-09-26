@@ -718,6 +718,39 @@ grep -q "WARN: OTLP export to collector returned 503" "$LWLOG" || fail "collecto
 ok "failed run exports error status; collector 503 only warns"
 
 # ═════════════════════════════════════════════════════════════════════════
+setup "related pages: BM25 picks topical catalog pages; static, escaped, re-validated (backlog #26)"
+seed_entry() {  # seed_entry <slug> <title> <summary> <tag>
+  mkdir -p "$SEED/site/pages/2025"
+  printf '<!doctype html><html><body><main><h1>%s</h1></main></body></html>\n' "$1" > "$SEED/site/pages/2025/$1.html"
+  jq --arg s "$1" --arg t "$2" --arg m "$3" --arg g "$4" '.entries += [{slug: $s, title: $t, category: "infra", tags: [$g], date: "2025-05-01",
+      path: ("pages/2025/" + $s + ".html"), summary: $m, source: "seed"}]' "$SEED/site/manifest.json" > "$W/m.json" && mv "$W/m.json" "$SEED/site/manifest.json"
+}
+seed_entry k8s-job-backoff "Kubernetes Job backoffLimit & CronJob retries" "How CronJob retries interact with backoffLimit for queue workers." k8s
+seed_entry sqs-visibility "Queue visibility timeout for idempotent workers" "Idempotent workers and the queue visibility timeout." queues
+seed_entry sourdough "Sourdough starter feeding schedule" "Hydration and feeding times for a rye starter." baking
+seed_entry evil-path "CronJob queue worker <script>" "CronJob queue idempotent workers k8s." k8s
+jq '(.entries[] | select(.slug == "evil-path") | .path) = "javascript:alert(1)"' "$SEED/site/manifest.json" > "$W/m.json" && mv "$W/m.json" "$SEED/site/manifest.json"
+git -C "$SEED" add -A && git -C "$SEED" commit -qm "seed entries" && git -C "$SEED" push -q "$BARE" HEAD:refs/heads/main
+lw
+PAGE="$SITE/pages/$YEAR/k8s-cronjob-queue-ingest.html"
+[[ -f "$PAGE" ]] || fail "page not published"
+grep -q '<nav><h2>Related</h2><ul>' "$PAGE" || fail "no related list: $(tail -5 "$PAGE")"
+nav="$(grep -o '<nav>.*</nav>' "$PAGE")"
+[[ "$nav" == *'href="../2025/k8s-job-backoff.html">Kubernetes Job backoffLimit &amp; CronJob retries</a>'* ]] || fail "topical page missing or unescaped: $nav"
+[[ "$nav" == *'2025/sqs-visibility.html'* ]] || fail "second topical page missing: $nav"
+[[ "$nav" != *sourdough* ]] || fail "unrelated page linked: $nav"
+[[ "$nav" != *javascript* && "$nav" != *evil-path* ]] || fail "unsafe catalog path linked: $nav"
+[[ "$(grep -c '<nav>' "$PAGE")" == 1 ]] || fail "related list must appear once"
+[[ -z "$(bash -c "source '$SRC_ROOT/lib/publish.sh'; html_problem '$PAGE'")" ]] || fail "page with related list fails the validator"
+jq -e '.related_links == 2' <(ledger_last) >/dev/null || fail "ledger: $(ledger_last | jq -c '{related_links}')"
+# RELATED_PAGES=0 turns it off
+setup "related pages: RELATED_PAGES=0 is off"
+conf 'RELATED_PAGES=0'
+lw
+if grep -q '<nav>' "$SITE/pages/$YEAR/k8s-cronjob-queue-ingest.html"; then fail "RELATED_PAGES=0 must add no list"; fi
+ok "2 topical pages linked (escaped title, ../2025/ href), baking page and unsafe path left out, page re-validated; 0 = off"
+
+# ═════════════════════════════════════════════════════════════════════════
 setup "near-duplicate guard: same topic under a new slug is dropped, new topic kept"
 lw
 jq -e '.entries | length == 1' "$SITE/manifest.json" >/dev/null || fail "first publish"

@@ -293,7 +293,7 @@ ledger_append() {
     --argjson trimmed "${TRIMMED_BYTES:-0}" \
     --argjson drops "${POSTSCAN_DROPS:-0}" \
     --argjson vdrops "${VALIDATOR_DROPS:-0}" \
-    --argjson ndrops "${NEAR_DUP_DROPS:-0}" \
+    --argjson ndrops "${NEAR_DUP_DROPS:-0}" --argjson rel "${RELATED_LINKS:-0}" \
     --arg pv "${PROMPT_VERSION:-}" \
     --arg canary "${CANARY_STATUS:-}" \
     --argjson gdrops "${GROUNDING_DROPS:-0}" --argjson ungr "${UNGROUNDED_TOKENS:-0}" --argjson pruned "${PRUNED:-0}" \
@@ -320,7 +320,7 @@ ledger_append() {
       skipped_reason: (if $skipped == "" then null else $skipped end),
       status: $status, run_id: $run_id, dry_run: $dry,
       bundle_bytes: $bundle_bytes, trimmed_bytes: $trimmed, postscan_drops: $drops,
-      validator_drops: $vdrops, near_dup_drops: $ndrops,
+      validator_drops: $vdrops, near_dup_drops: $ndrops, related_links: $rel,
       stage_b_skipped: (if $sbskip == "" then null else $sbskip end),
       attempts: length,
       retries: (length - (map(.stage) | unique | length)),

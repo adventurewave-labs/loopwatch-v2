@@ -49,6 +49,8 @@ source "$CONF"
 : "${EXPORT_MD_DIR:=}"
 : "${EXPORT_DIGEST_TO:=}"
 : "${NEAR_DUP_THRESHOLD:=0.55}"
+: "${RELATED_PAGES:=3}"
+: "${RELATED_MIN_SCORE:=1.5}"
 : "${MONTHLY_BUDGET_USD:=20.00}"         # calendar-month cap across runs (0 = off); fails closed, activity stays queued
 : "${COST_ANOMALY_FACTOR:=3}"           # flag a run costing >= this x the rolling median
 : "${RETENTION_DAYS:=30}"              # prune logs/autopsies/private page copies older than this (0 = keep)
@@ -194,6 +196,7 @@ TRIMMED_BYTES=0
 POSTSCAN_DROPS=0
 VALIDATOR_DROPS=0
 NEAR_DUP_DROPS=0
+RELATED_LINKS=0
 GROUNDING_DROPS=0
 UNGROUNDED_TOKENS=0
 STAGE_B_SKIP=""
