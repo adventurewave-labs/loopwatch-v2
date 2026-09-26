@@ -56,3 +56,7 @@ atlassian-bare|atlassian|rotated [[ATATT3x{}FfGF0abcdefghijklmnopqrstuvwxyz01234
 pulumi-bare|pulumi|old [[pul-{}0123456789abcdef0123456789abcdef01234567]] revoked
 linear-bare|linear|pasted [[lin_api_{}AbCdEfGhIjKlMnOpQrStUvWxYz0123456789ABCD]] by mistake
 twilio-bare|twilio|the [[SK{}0123456789abcdef0123456789abcdef]] key
+# rule families the mutation run showed had no sample here (only the smoke canary caught them)
+email|email|ping [[jane.doe{}@example-corp.io]] about the rollout
+bearer|bearer|curl -H "Authorization: [[BEARER {}eyZ9abcdefghijklmnopqrstu]]"
+generic-sk|key|legacy key [[sk-{}abcdefghijklmnop1234]] in the old config

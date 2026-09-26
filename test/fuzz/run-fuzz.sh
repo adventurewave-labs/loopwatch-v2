@@ -33,6 +33,14 @@ mkdir -p "$W/l1"
 bash -c "source '$SRC_ROOT/lib/extract.sh'; jq -c \"\$BODY_GATE_JQ\"' {id, body: (.body | neutralize)} | . + {ok: (.body | body_ok)}' '$W/cases.jsonl'" > "$W/l1.jsonl"
 n_gate_fail="$(jq -s 'map(select(.ok | not)) | length' "$W/l1.jsonl")"
 [[ "$n_gate_fail" == 0 ]] || fail "layer 1: $n_gate_fail neutralized bodies still hold non-allowlisted markup"
+# ...judged independently too: the gate shares allowed_tail with neutralize, so a loosened
+# allowlist would pass its own gate. This regex is the test's own copy of the contract.
+n_indep="$(jq -s '[.[] | .body | [scan("<[A-Za-z/!?][^<>]*>?")][]
+  | select(test("^</?(h2|h3|h4|p|ul|ol|li|pre|code|strong|em|b|i|table|thead|tbody|tr|th|td|blockquote)>$|^<(br|hr) ?/?>$") | not)] | length' "$W/l1.jsonl")"
+[[ "$n_indep" == 0 ]] || fail "layer 1: $n_indep tag(s) outside the bare-tag contract survived neutralize"
+# the gate is the backstop behind neutralize, so it must reject the RAW markup neutralize rewrote
+n_gate_open="$(bash -c "source '$SRC_ROOT/lib/extract.sh'; jq -c \"\$BODY_GATE_JQ\"' select((.body | neutralize) != .body and (.body | body_ok)) | .id' '$W/cases.jsonl'" | wc -l | tr -d ' ')"
+[[ "$n_gate_open" == 0 ]] || fail "layer 1: the gate accepted $n_gate_open raw bodies that neutralize had to rewrite"
 jq -s '[.[] | {candidate_id: "c1", slug: ("fz-" + .id), title: "fuzz", category: "ideas", tags: [], summary: "fuzz", source: "fuzz", body_html: .body}]' "$W/l1.jsonl" > "$W/l1/pages.json"
 RUN_DIR="$W/l1" RUN_DATE=2026-01-01 bash -c "source '$SRC_ROOT/lib/extract.sh'; render_page_files '$W/l1/pages.json'"
 # layer 2: render every case (gate bypassed) through the real renderer, judge with html_problem

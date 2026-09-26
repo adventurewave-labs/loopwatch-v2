@@ -31,7 +31,7 @@ setup() {
   LW_STATE="$H/.local/state/loopwatch"
   CALLS="$W/claude-calls.log"; : > "$CALLS"
   export STUB_CALLS="$CALLS"
-  unset STUB_INPUTS STUB_SCHEMAS STUB_TRIAGE_COST STUB_PAGES STUB_TRIAGE STUB_FAIL STUB_HELP_FLAGS STUB_MARKER STUB_DIGEST STUB_HIGHLIGHT STUB_OVERLOAD STUB_MODEL_USED 2>/dev/null || true
+  unset STUB_INPUTS STUB_SCHEMAS STUB_TRIAGE_COST STUB_PAGES STUB_TRIAGE STUB_FAIL STUB_HELP_FLAGS STUB_MARKER STUB_DIGEST STUB_HIGHLIGHT STUB_OVERLOAD STUB_OVERLOAD_COST STUB_MODEL_USED 2>/dev/null || true
   export STUB_FAIL_STATE="$W/stub-fail-state"; mkdir -p "$STUB_FAIL_STATE"
   LWLOG=""
 
@@ -777,8 +777,12 @@ ok "missing isolation flag fails closed before any call"
 # ═════════════════════════════════════════════════════════════════════════
 setup "resilient calls: transient overload retried with backoff, then published"
 conf 'CLAUDE_RETRY_BASE_S=0'
-STUB_OVERLOAD="triage:2" lw
+STUB_OVERLOAD="triage:2" STUB_OVERLOAD_COST=0.01 lw
 [[ "$(grep -c 'stage=triage' "$CALLS")" == 3 ]] || fail "triage should run 3 times (2 overloads + success): $(grep -c 'stage=triage' "$CALLS")"
+# each retry's budget is the stage budget minus what the failed attempts already spent
+tb="$(grep 'stage=triage' "$CALLS" | grep -o 'budget=[^ ]*' | cut -d= -f2 | tr '\n' ' ')"
+jq -e -n --argjson a "[${tb// /,}0]" '($a[0] - $a[1]) >= 0.009 and ($a[1] - $a[2]) >= 0.009' >/dev/null \
+  || fail "retries must get the stage budget minus what was spent (\$0.01 per overload): $tb"
 grep -q "triage: transient failure on attempt 1/3" "$LWLOG" || fail "retry not logged"
 jq -e '.status == "published" and .pages == 1 and .attempts == 4 and .retries == 2 and .fallback_used == false' <(ledger_last) >/dev/null \
   || fail "ledger: $(ledger_last | jq -c '{status, pages, attempts, retries, fallback_used}')"
@@ -946,7 +950,7 @@ jq -e '.status == "skipped" and .skipped_reason == "monthly_budget_exhausted"' <
 jq -e '.files | length == 0' "$LW_STATE/watermarks.json" >/dev/null 2>&1 || [[ ! -f "$LW_STATE/watermarks.json" ]] || fail "activity must stay queued (watermarks held)"
 ok "month spent (\$19.97 of \$20; an old month's \$500 ignored): skipped with 0 calls, watermarks held"
 # 19.50 spent -> this run's budget is clamped to the $0.50 left
-{ row "${M}-01T03:30:00-0600" 19.50; } > "$LW_STATE/runs.jsonl"
+{ row "${M}-01T03:30:00-0600" 19.50; row "2020-01-01T03:30:00-0600" 500; } > "$LW_STATE/runs.jsonl"
 lw
 grep -q 'monthly budget: \$0.5 left of \$20 — this run.s budget clamped from \$1.00' "$LWLOG" || fail "clamp not logged: $(grep monthly "$LWLOG")"
 grep "stage=extract" "$CALLS" | grep -q "budget=0.4[0-9]* " || fail "writer budget must come out of the clamped \$0.50: $(grep stage=extract "$CALLS" | grep -o 'budget=[^ ]*')"

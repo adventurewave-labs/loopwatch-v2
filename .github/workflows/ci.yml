@@ -61,6 +61,19 @@ jobs:
         run: |
           if [ "$RUNNER_OS" = "macOS" ]; then /bin/bash test/fuzz/run-fuzz.sh; else bash test/fuzz/run-fuzz.sh; fi
 
+  mutation:
+    # ~16 min, so weekly and on demand only: breaks each safety check on purpose and fails
+    # if the suites stop noticing (mutation score below 100% of the scored mutants)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: mutation testing of the safety code
+        run: MUT_MIN_SCORE=100 bash test/mutation/run-mutation.sh
+
   shellcheck:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -69,6 +82,6 @@ jobs:
         with:
           persist-credentials: false
       - name: shellcheck (error severity)
-        run: shellcheck -S error bin/* lib/*.sh test/*.sh test/stubs/* test/eval/*.sh test/eval/replay-claude test/fuzz/*.sh test/scrub/*.sh test/prop/*.sh test/ci-policy.sh catalog-template/test/*.sh
+        run: shellcheck -S error bin/* lib/*.sh test/*.sh test/stubs/* test/eval/*.sh test/eval/replay-claude test/fuzz/*.sh test/scrub/*.sh test/prop/*.sh test/mutation/*.sh test/ci-policy.sh catalog-template/test/*.sh
       - name: CI supply-chain policy (pinned SHAs, least privilege, no persisted creds, no injection vectors)
         run: bash test/ci-policy.sh
