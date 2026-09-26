@@ -37,10 +37,14 @@ jobs:
         shell: bash
         run: |
           if [ "$RUNNER_OS" = "macOS" ]; then /bin/bash test/eval/run-eval.sh; else bash test/eval/run-eval.sh; fi
+      - name: validator fuzz (1,406 XSS/exfil cases, both layers; passers must be browser-proven inert)
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then /bin/bash test/fuzz/run-fuzz.sh; else bash test/fuzz/run-fuzz.sh; fi
 
   shellcheck:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: shellcheck (error severity)
-        run: shellcheck -S error bin/* lib/*.sh test/*.sh test/stubs/* test/eval/*.sh test/eval/replay-claude catalog-template/test/*.sh
+        run: shellcheck -S error bin/* lib/*.sh test/*.sh test/stubs/* test/eval/*.sh test/eval/replay-claude test/fuzz/*.sh catalog-template/test/*.sh

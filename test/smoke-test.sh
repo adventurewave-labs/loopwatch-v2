@@ -557,7 +557,7 @@ ok "unknown PR state: no PR opened, run failed with gh_pr_list_failed"
 setup "review: validator bypasses (quoted >, entities, tab-split scheme, url(), object, meta refresh)"
 export STUB_PAGES=unsafe2
 lw
-test -f "$SITE/pages/$YEAR/safe-page-two.html" || fail "safe page with data:image, relative links and escaped code should publish"
+test -f "$SITE/pages/$YEAR/safe-page-two.html" || fail "safe page (escaped markup in code, bare < in text, table) should publish"
 for bad in quoted-gt-page entity-js-page tab-js-page css-url-page object-page meta-refresh-page https-link-page import-page; do
   if [[ -f "$SITE/pages/$YEAR/$bad.html" ]]; then fail "bypass published: $bad"; fi
 done

@@ -142,7 +142,7 @@ case "${STUB_PAGES:-one}" in
     add "$(pg iframe-page "Iframe page" "<iframe src=\"about:blank\"></iframe>")"
     add "$(pg leaked-stripe-page "Stripe page" "<p>key sk_live_ABCDEFGHIJKLMNOPQRSTUVWX</p>")" ;;
   unsafe2)
-    add "$(pg safe-page-two "Safe page two" '<p>code: <code>&lt;img onerror=x&gt;</code> <a href="#x">local</a> <a href="../index.html">up</a> <img src="data:image/png;base64,AAAA"></p>')"
+    add "$(pg safe-page-two "Safe page two" '<p>code: <code>&lt;img onerror=x&gt;</code>, a &lt;script&gt; mention, 1 < 2 and b > a</p><table><tr><th>k</th><td>v</td></tr></table><br/>')"
     add "$(pg quoted-gt-page "Unsafe quoted-gt-page" '<img alt=">" onerror=alert(1) src=x>')"
     add "$(pg entity-js-page "Unsafe entity-js-page" '<a href="&#106;avascript:alert(1)">x</a>')"
     add "$(pg tab-js-page "Unsafe tab-js-page" '<a href="java&#9;script:alert(1)">x</a>')"

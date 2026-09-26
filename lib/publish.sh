@@ -55,23 +55,37 @@ html_problem() {
   jq -Rrs '
     def hexval: ascii_downcase | explode | reduce .[] as $c (0; . * 16 + (if $c >= 97 then $c - 87 else $c - 48 end));
     def decode:
-      gsub("&#[xX](?<h>[0-9a-fA-F]{1,6});?"; (.h | hexval | [.] | implode))
-      | gsub("&#(?<d>[0-9]{1,7});?"; (.d | tonumber | [.] | implode))
+      gsub("&#[xX](?<h>[0-9a-fA-F]{1,8});?"; (.h | hexval | [.] | implode))
+      | gsub("&#(?<d>[0-9]{1,9});?"; (.d | tonumber | [.] | implode))
       | gsub("&(?i:colon);"; ":") | gsub("&(?i:sol);"; "/") | gsub("&(?i:tab);"; "\t") | gsub("&(?i:newline);"; "\n")
       | gsub("&(?i:lpar);"; "(") | gsub("&(?i:rpar);"; ")") | gsub("&(?i:period);"; ".") | gsub("&(?i:bsol);"; "\\\\")
       | gsub("&(?i:quot);"; "\"") | gsub("&(?i:apos);"; "\u0027") | gsub("&(?i:lt);"; "<") | gsub("&(?i:gt);"; ">") | gsub("&(?i:amp);"; "&");
-    def squash: gsub("[\t\n\r]"; "");
+    # CSS: comments vanish and \HH escapes are characters, so u/**/rl( and \75rl( are url(
+    def css: gsub("(?s)/\\*.*?\\*/"; "")
+             | gsub("\\\\(?<h>[0-9a-fA-F]{1,6})[ \t\n\r\f]?"; (.h | hexval | [.] | implode))
+             | gsub("\\\\(?<c>[^0-9a-fA-F\n])"; .c);
+    # browsers drop ASCII tab/LF/CR anywhere in a URL and trim C0 controls + spaces at the ends
+    def urlnorm: gsub("[\t\n\r]"; "") | sub("^[\u0000-\u0020]+"; "") | ascii_downcase;
+    def bad_url: urlnorm | test("^(https?:|[/\\\\]{2}|javascript:|vbscript:|data:(?!image/(png|gif|jpeg|webp);))");
+    # tokenise like a browser: attributes are split on the RAW tag, then each value is decoded
+    def tagname: (capture("^</?(?<n>[A-Za-z][^\\s/>]*)").n // "") | ascii_downcase;
+    def attrs: [ scan("[\\s/\"\u0027](?<n>[^\\s/>\"\u0027=]+)\\s*=\\s*(?<v>\"[^\"]*\"|\u0027[^\u0027]*\u0027|[^\\s>]+)")
+                 | {n: (.[0] | ascii_downcase), v: (.[1] | sub("^[\"\u0027]"; "") | sub("[\"\u0027]$"; "") | decode)} ];
     . as $raw
     | ($raw | decode) as $dec
-    | [ $raw | scan("<[A-Za-z!/?](?:\"[^\"]*\"|\u0027[^\u0027]*\u0027|[^\"\u0027>])*>") ] as $tags
-    | ($tags | map(decode | squash)) as $t
+    | [ $raw | scan("<[A-Za-z!/?](?:\"[^\"]*\"|\u0027[^\u0027]*\u0027|[^\"\u0027>])*>") | {name: tagname, attrs: attrs, dec: decode} ] as $tags
     | if ($raw | test("<\\s*script"; "i")) then "inline or external <script>"
-      elif ($t | any(test("^<(iframe|object|embed|frame|frameset|applet|base|form|link|portal|svg|math)[\\s/>]"; "i"))) then "embedding/linking element"
-      elif ($t | any(test("^<meta[^>]*http-equiv"; "i"))) then "meta http-equiv"
-      elif ($t | any(test("[\\s/\"\u0027]on[a-z]+\\s*="; "i"))) then "on* event handler"
-      elif ($t | any(test("[\\s/\"\u0027](src|href|srcset|action|formaction|poster|data|background|xlink:href|ping|cite|longdesc|lowsrc|dynsrc|manifest|codebase|archive)\\s*=\\s*[\"\u0027]?\\s*(https?:|//|\\\\\\\\|javascript:|vbscript:|data:(?!image/(png|gif|jpeg|webp);))"; "i")))
+      elif ($tags | any(.name | test("^(script|iframe|object|embed|frame|frameset|applet|base|form|link|portal|svg|math|isindex|keygen|template|noscript|xmp|video|audio|source|marquee|details|dialog|input|button|select|textarea)$")))
+        then "embedding/active element"
+      elif ($tags | any(.name == "meta" and (.attrs | any(.n == "http-equiv")))) then "meta http-equiv"
+      elif ($tags | any(.attrs | any(.n | startswith("on")))) or ($tags | any(.dec | test("[\\s/\"\u0027]on[a-z]+\\s*="; "i")))
+        then "on* event handler"
+      elif ($tags | any(.attrs | any(.n == "srcset" or .n == "srcdoc" or .n == "popovertarget"))) then "srcset/srcdoc/popover attribute"
+      elif ($tags | any(.attrs | any((.n | test("^(src|href|action|formaction|poster|data|background|xlink:href|ping|cite|longdesc|lowsrc|dynsrc|manifest|codebase|archive)$")) and (.v | bad_url))))
         then "external or scriptable URL in an attribute"
-      elif ($dec | test("url\\s*\\(|@import|expression\\s*\\("; "i")) then "CSS url()/@import/expression"
+      elif ((($dec | css) | test("url\\s*\\(|@import|expression\\s*\\(|image-set\\s*\\("; "i"))
+            or ($tags | any(.attrs | any(.n == "style" and (.v | css | test("url\\s*\\(|expression\\s*\\(|image-set\\s*\\("; "i"))))))
+        then "CSS url()/@import/expression"
       else empty end' "$1"
 }
 
