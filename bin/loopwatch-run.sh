@@ -20,9 +20,8 @@ source "$CONF"
 : "${STATE_DIR:=${XDG_STATE_HOME:-$HOME/.local/state}/loopwatch}"
 : "${CLAUDE_BIN:=claude}"
 : "${MODEL:=sonnet}"                    # stage B (writing)
-: "${MAX_TURNS:=50}"
 : "${TRIAGE_MODEL:=haiku}"             # stage A (triage)
-: "${TRIAGE_MAX_TURNS:=30}"
+: "${THINKING_TOKENS:=0}"
 : "${TRIAGE_BUDGET_USD:=0.30}"
 : "${MAX_CANDIDATES:=5}"
 : "${EXCERPT_MAX_KB:=24}"
@@ -178,7 +177,6 @@ VALIDATOR_DROPS=0
 STAGE_B_SKIP=""
 
 autopsy() {
-  restore_bundle 2>/dev/null || true
   cp -R "$RUN_DIR" "$STATE_DIR/failed/$RUN_TS" 2>/dev/null || true
   log "autopsy saved: $STATE_DIR/failed/$RUN_TS"
   # keep the 5 most recent autopsies

@@ -1,0 +1,61 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "pages"
+  ],
+  "properties": {
+    "pages": {
+      "type": "array",
+      "maxItems": 5,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "candidate_id",
+          "slug",
+          "title",
+          "category",
+          "tags",
+          "summary",
+          "source",
+          "body_html"
+        ],
+        "properties": {
+          "candidate_id": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]{2,79}$"
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 199
+          },
+          "category": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]+(/[a-z0-9-]+)?$"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 8
+          },
+          "summary": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "body_html": {
+            "type": "string",
+            "description": "inner HTML of <main> after the title/meta: h2, p, ul/ol/li, pre/code, strong/em, table only"
+          }
+        }
+      }
+    }
+  }
+}

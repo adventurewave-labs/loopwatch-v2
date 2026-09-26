@@ -37,7 +37,7 @@ MAX_CANDIDATES=5
 EXCERPT_MAX_KB=24            # per candidate
 EXCERPT_TOTAL_KB=80
 INCLUDE_TOOL_CALLS=true      # keep "[tool:Name] <command/path>" lines (results are always dropped)
-MAX_TURNS=50                 # passed only if the CLI lists --max-turns (PASS_MAX_TURNS=true forces it)
+THINKING_TOKENS=0            # extended-thinking budget per call; 0 = off (most of the triage output cost when on)
 MAX_FILE_KB=120              # per-source delta cap after filtering
 MAX_BUNDLE_KB=300            # whole-bundle cap; oldest content is trimmed first
 ACTIVITY_MIN_BYTES=2000      # below this much real content, no model call at all (provisional default)

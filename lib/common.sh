@@ -37,43 +37,34 @@ claude_supports() {
   printf '%s' "$CLAUDE_HELP" | grep -q -- "$1"
 }
 
-# Read/Grep/Glob deny rules for headless calls. Claude Code lets Read reach outside
-# the cwd (verified on 2.1.283), so everything loopwatch must not show the model is
-# denied by absolute path ("//" prefix); deny rules also cover Grep and Glob (verified).
-claude_read_denies() {
-  local h="${HOME#/}" d rules=""
-  for d in "$h/.claude" "$h/Library" "$h/.config" "$h/.ssh" "$h/.aws" "$h/.gnupg" "$h/.netrc" \
-           "${STATE_DIR#/}/private" "${STATE_DIR#/}/failed" "${STATE_DIR#/}/logs" "${STATE_DIR#/}/catalog" \
-           ${CLAUDE_EXTRA_DENY_DIRS[@]+"${CLAUDE_EXTRA_DENY_DIRS[@]}"}; do
-    rules="${rules:+$rules,}Read(//${d#/}/**)"
-  done
-  printf '%s' "$rules"
-}
-
-# run_claude <stage> <model> <prompt-file> <allowed-tools> <max-turns> <budget-usd>
-# Runs headless claude from $RUN_DIR (fixed cwd — see R-4), captures the JSON result
-# in $RUN_DIR/<stage>.json and appends a usage record to $RUN_DIR/usage.jsonl.
-# Returns the CLI exit code. Sets CLAUDE_LAST_SUBTYPE.
+# run_claude <stage> <model> <system-prompt-file> <input-file> <schema-file> <budget-usd>
+#
+# Structured mode (the only mode): one headless call with NO tools (--tools ""), the
+# stage prompt as the system prompt, the data on stdin, and the answer constrained by
+# --json-schema (read back from .structured_output). The model cannot touch the
+# filesystem, so nothing outside the given input can reach it, and nothing it writes
+# lands on disk except through our validator. Extended thinking is off by default
+# (THINKING_TOKENS=0): on the measured sample it was most of the triage output cost.
+# Runs from $RUN_DIR (fixed cwd, R-4). Result JSON in $RUN_DIR/<stage>.json; a usage
+# record is appended to $USAGE_FILE. Returns the CLI exit code; sets CLAUDE_LAST_SUBTYPE.
 CLAUDE_LAST_SUBTYPE=""
 run_claude() {
-  local stage="$1" model="$2" prompt_file="$3" tools="$4" turns="$5" budget="$6"
+  local stage="$1" model="$2" sys_file="$3" input_file="$4" schema_file="$5" budget="$6"
   local out="$RUN_DIR/$stage.json" err="$RUN_DIR/$stage.err" rc
   local -a args
-  args=(-p "$(cat "$prompt_file")" --model "$model" --output-format json --allowedTools "$tools"
-        --disallowedTools "$(claude_read_denies)")
+  args=(-p --model "$model" --output-format json --tools ""
+        --system-prompt "$(cat "$sys_file")"
+        --json-schema "$(jq -c . "$schema_file")")
   if claude_supports --no-session-persistence; then args+=(--no-session-persistence); fi
   if claude_supports --strict-mcp-config;      then args+=(--strict-mcp-config); fi
   if [[ -n "$budget" ]] && claude_supports --max-budget-usd; then args+=(--max-budget-usd "$budget"); fi
-  if [[ -n "$turns" ]] && { [[ "${PASS_MAX_TURNS:-auto}" == "true" ]] || { [[ "${PASS_MAX_TURNS:-auto}" == "auto" ]] && claude_supports --max-turns; }; }; then
-    args+=(--max-turns "$turns")
-  fi
   if [[ -n "${CLAUDE_EXTRA_ARGS:-}" ]]; then
     # shellcheck disable=SC2206
     args+=($CLAUDE_EXTRA_ARGS)
   fi
 
   set +e
-  ( cd "$RUN_DIR" && "$CLAUDE_BIN" "${args[@]}" ) < /dev/null > "$out" 2> "$err"
+  ( cd "$RUN_DIR" && MAX_THINKING_TOKENS="${THINKING_TOKENS:-0}" "$CLAUDE_BIN" "${args[@]}" ) < "$input_file" > "$out" 2> "$err"
   rc=$?
   set -e
   # a result the CLI flags as an error (budget/turn cap, API error) is a failure even on exit 0

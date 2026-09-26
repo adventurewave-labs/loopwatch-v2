@@ -1,18 +1,89 @@
 #!/usr/bin/env bash
 # loopwatch lib — two-tier extraction (sourced; do not execute). R-3.
 #
-#   Stage A  triage   TRIAGE_MODEL (haiku)  read-only tools, reads the whole bundle,
+#   Stage A  triage   TRIAGE_MODEL (haiku)  gets the whole bundle (line-numbered) on stdin,
 #                     returns digest + 0..N candidates with evidence line ranges
-#   Stage B  writing  MODEL (sonnet)        runs ONLY if candidates is non-empty, and
-#                     sees only excerpts of the cited lines (the bundle is moved out)
+#   Stage B  writing  MODEL (sonnet)        runs ONLY if candidates is non-empty, and gets
+#                     ONLY the cited excerpts on stdin; returns page bodies as JSON
 #
-# Produces $RUN_DIR/run-meta.json in the v0.1 publisher's shape.
+# Both calls are tool-free and schema-constrained (lib/common.sh run_claude). Page HTML
+# is rendered here from the returned body, never written by the model.
+# Produces $RUN_DIR/run-meta.json + $RUN_DIR/pages/*.html in the publisher's shape.
 
-# pull the JSON object out of the triage result text (tolerates code fences / preamble)
+# Spotlighting: every piece of collected data is fenced in tags the system prompt names
+# as data. The fence tag itself is neutralized inside the data so content cannot close it.
+fence() { sed -E 's#</(file|excerpt|context|candidates)>#<\\/\1>#g'; }
+
+build_triage_input() {
+  local f rel
+  {
+    echo "<context>"; jq . "$RUN_DIR/bundle/context.json"; echo "</context>"
+    while IFS= read -r f; do
+      rel="${f#"$RUN_DIR"/}"
+      echo "<file path=\"$rel\">"
+      awk '{ printf "%d: %s\n", NR, $0 }' "$f" | fence
+      echo "</file>"
+    done < <(find "$RUN_DIR/bundle/transcripts" "$RUN_DIR/bundle/git" -type f 2>/dev/null | sort)
+  } > "$RUN_DIR/triage-input.txt"
+  # Per-run schema: evidence.file must be one of THIS run's paths (enum), so the model
+  # cannot cite a path it merely saw mentioned inside a transcript.
+  find "$RUN_DIR/bundle/transcripts" "$RUN_DIR/bundle/git" -type f 2>/dev/null | sort \
+    | sed "s#^$RUN_DIR/##" | jq -R . | jq -s . > "$RUN_DIR/bundle-paths.json"
+  jq --slurpfile p "$RUN_DIR/bundle-paths.json" \
+    '.properties.candidates.items.properties.evidence.items.properties.file.enum = $p[0]' \
+    "$ROOT_DIR/schemas/triage.schema.json" > "$RUN_DIR/triage.schema.json"
+}
+
+build_writer_input() {
+  local f
+  {
+    echo "<context>"; jq . "$RUN_DIR/bundle/context.json"; echo "</context>"
+    echo "<candidates>"; jq '.candidates' "$RUN_DIR/candidates.json" | fence; echo "</candidates>"
+    for f in "$RUN_DIR"/excerpts/*.txt; do
+      [[ -f "$f" ]] || continue
+      echo "<excerpt id=\"$(basename "$f" .txt)\">"; fence < "$f"; echo "</excerpt>"
+    done
+  } > "$RUN_DIR/writer-input.txt"
+}
+
+# render_pages: structured page bodies -> pages/<slug>.html (fixed skeleton, escaped
+# metadata) + run-meta.json. The validator and post-scan still run on the result.
+render_pages() {
+  local slug
+  mkdir -p "$RUN_DIR/pages"
+  jq -c '(.structured_output.pages // [])[] | select(type == "object")' "$RUN_DIR/extract.json" 2>/dev/null \
+  | while IFS= read -r row; do
+      slug="$(jq -r '.slug // "" | tostring' <<< "$row")"
+      [[ "$slug" =~ ^[a-z0-9][a-z0-9-]{2,79}$ ]] || { log "writer: dropped a page with an invalid slug"; continue; }
+      jq -r --arg date "$RUN_DATE" '
+        (.title // "" | @html) as $t
+        | "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>" + $t + "</title>\n<style>\n"
+          + "  :root { color-scheme: dark; }\n  body { margin:0; background:#0f1115; color:#d7dae0; font:16px/1.6 -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif; }\n"
+          + "  main { max-width:780px; margin:0 auto; padding:48px 24px; }\n  h1 { font-size:1.6rem; line-height:1.3; margin:0 0 8px; }\n"
+          + "  .meta { color:#8b93a7; font-size:.85rem; margin-bottom:32px; }\n  h2 { font-size:1.15rem; margin-top:36px; border-bottom:1px solid #232838; padding-bottom:6px; }\n"
+          + "  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:.9em; background:#161a22; padding:2px 5px; border-radius:4px; }\n"
+          + "  pre { background:#161a22; border:1px solid #232838; border-radius:8px; padding:16px; overflow-x:auto; }\n  pre code { background:none; padding:0; }\n"
+          + "  table { border-collapse:collapse; } td, th { border:1px solid #232838; padding:4px 8px; }\n"
+          + "  ul, ol { padding-left:1.2em; }\n  footer { margin-top:48px; padding-top:16px; border-top:1px solid #232838; color:#8b93a7; font-size:.8rem; }\n"
+          + "</style>\n</head>\n<body><main>\n<h1>" + $t + "</h1>\n"
+          + "<div class=\"meta\">" + ($date | @html) + " · " + (.category // "" | @html) + " · " + (.source // "" | @html) + "</div>\n"
+          + (.body_html // "") + "\n"
+          + "<footer>" + ($date | @html) + " · " + (.source // "" | @html) + " · generated by loopwatch</footer>\n</main></body>\n</html>"
+      ' <<< "$row" > "$RUN_DIR/pages/$slug.html"
+    done
+  jq --slurpfile t "$RUN_DIR/triage-meta.json" '
+    {run_date: $t[0].run_date, digest_summary: $t[0].digest_summary, highlights: $t[0].highlights,
+     pages: [(.structured_output.pages // [])[] | select(type == "object")
+             | {candidate_id, slug, title, category, tags: (.tags // []), summary, source,
+                file: ("pages/" + (.slug // "" | tostring) + ".html")}]}' \
+    "$RUN_DIR/extract.json" > "$RUN_DIR/run-meta.json"
+}
+
+# triage result: .structured_output (schema-enforced); a JSON object in .result is
+# accepted as a fallback. Shape is re-validated either way.
 parse_triage() {
   jq -e '
-    (.result // "") as $r
-    | ($r | capture("(?s)(?<j>\\{.*\\})").j | fromjson)
+    (.structured_output // ((.result // "") | capture("(?s)(?<j>\\{.*\\})").j | fromjson))
     | select(type == "object"
              and (.digest_summary | type == "string")
              and ((.highlights // []) | type == "array")
@@ -73,11 +144,6 @@ build_excerpts() {
     && mv "$cands.tmp" "$cands"
 }
 
-# stage B hides the bundle so the writer can only work from the cited excerpts
-BUNDLE_HELD=""
-hold_bundle()    { BUNDLE_HELD="$STATE_DIR/private/bundle-held"; rm -rf "$BUNDLE_HELD"; mv "$RUN_DIR/bundle" "$BUNDLE_HELD"; }
-restore_bundle() { if [[ -n "$BUNDLE_HELD" && -d "$BUNDLE_HELD" ]]; then rm -rf "$RUN_DIR/bundle"; mv "$BUNDLE_HELD" "$RUN_DIR/bundle"; fi; BUNDLE_HELD=""; }
-
 usage_cost() { jq -s 'map(.cost_usd) | add // 0' "$RUN_DIR/usage.jsonl"; }
 
 # run_extraction: stage A, then stage B if warranted. Leaves run-meta.json.
@@ -85,8 +151,9 @@ run_extraction() {
   local budget_a budget_b n_cand spent
   budget_a="$(jq -n --argjson a "$TRIAGE_BUDGET_USD" --argjson t "$BUDGET_USD" '[$a, $t] | min')"
 
-  log "stage A triage: model=$TRIAGE_MODEL budget=\$$budget_a"
-  if ! run_claude triage "$TRIAGE_MODEL" "$ROOT_DIR/prompts/triage.md" "Read,Glob,Grep" "$TRIAGE_MAX_TURNS" "$budget_a"; then
+  build_triage_input
+  log "stage A triage: model=$TRIAGE_MODEL budget=\$$budget_a input=$(( $(file_size "$RUN_DIR/triage-input.txt") / 1024 ))KB"
+  if ! run_claude triage "$TRIAGE_MODEL" "$ROOT_DIR/prompts/triage.md" "$RUN_DIR/triage-input.txt" "$RUN_DIR/triage.schema.json" "$budget_a"; then
     case "$CLAUDE_LAST_SUBTYPE" in
       *budget*) DIE_REASON=budget_exceeded; die "triage hit its \$$budget_a budget cap (watermarks not advanced)" ;;
       *)        DIE_REASON=claude_error;    die "triage failed (subtype=$CLAUDE_LAST_SUBTYPE) — see triage.json/triage.err" ;;
@@ -119,23 +186,15 @@ run_extraction() {
     return 0
   fi
 
-  cp "$RUN_DIR/bundle/context.json" "$RUN_DIR/context.json"
-  hold_bundle
-  log "stage B writing: model=$MODEL budget=\$$budget_b"
-  if ! run_claude extract "$MODEL" "$ROOT_DIR/prompts/extract.md" "Read,Write,Glob,Grep" "$MAX_TURNS" "$budget_b"; then
-    restore_bundle
+  build_writer_input
+  log "stage B writing: model=$MODEL budget=\$$budget_b input=$(( $(file_size "$RUN_DIR/writer-input.txt") / 1024 ))KB"
+  if ! run_claude extract "$MODEL" "$ROOT_DIR/prompts/extract.md" "$RUN_DIR/writer-input.txt" "$ROOT_DIR/schemas/pages.schema.json" "$budget_b"; then
     case "$CLAUDE_LAST_SUBTYPE" in
       *budget*) DIE_REASON=budget_exceeded; die "writing stage hit its \$$budget_b budget cap (watermarks not advanced)" ;;
       *)        DIE_REASON=claude_error;    die "writing stage failed (subtype=$CLAUDE_LAST_SUBTYPE) — see extract.json/extract.err" ;;
     esac
   fi
-  restore_bundle
-
-  if [[ ! -f "$RUN_DIR/run-meta.json" ]] || ! jq -e '.pages | type == "array"' "$RUN_DIR/run-meta.json" >/dev/null 2>&1; then
-    DIE_REASON=no_meta; die "writing stage produced no valid run-meta.json"
-  fi
-  # the digest always comes from triage
-  jq --slurpfile t "$RUN_DIR/triage-meta.json" \
-    '.digest_summary = $t[0].digest_summary | .highlights = $t[0].highlights | .run_date = $t[0].run_date' \
-    "$RUN_DIR/run-meta.json" > "$RUN_DIR/m.tmp" && mv "$RUN_DIR/m.tmp" "$RUN_DIR/run-meta.json"
+  jq -e '.structured_output.pages | type == "array"' "$RUN_DIR/extract.json" >/dev/null 2>&1 \
+    || { DIE_REASON=no_meta; die "writing stage returned no structured pages (see extract.json)"; }
+  render_pages
 }
