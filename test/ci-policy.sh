@@ -13,9 +13,11 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 if [[ $# -gt 0 ]]; then files=("$@"); else files=("$ROOT"/.github/workflows/*.yml "$ROOT"/catalog-template/.github/workflows/*.yml); fi
 bad=0
+n_files=0
 v() { echo "  VIOLATION ${1##*/}: $2"; bad=$((bad + 1)); }
 for f in "${files[@]}"; do
   [[ -f "$f" ]] || continue
+  n_files=$((n_files + 1))
   while IFS= read -r line; do
     ref="$(sed -E 's/^[[:space:]]*-?[[:space:]]*uses:[[:space:]]*//' <<< "$line")"
     [[ "$ref" == ./* ]] && continue
@@ -23,7 +25,8 @@ for f in "${files[@]}"; do
   done < <(grep -E '^[[:space:]]*-?[[:space:]]*uses:' "$f")
   grep -qE '^permissions:' "$f" || v "$f" "R2 no top-level permissions block"
   grep -qE 'permissions:[[:space:]]*write-all' "$f" && v "$f" "R2 write-all permissions"
-  awk '/uses:[[:space:]]*actions\/checkout@/ { pending = 1; seen = 0; n = 0; next }
+  awk '/^[[:space:]]*#/ { next }
+       /uses:[[:space:]]*actions\/checkout@/ { pending = 1; seen = 0; n = 0; next }
        pending { n++; if ($0 ~ /persist-credentials:[[:space:]]*false/) seen = 1
                  if (n >= 3 || $0 ~ /^[[:space:]]*- /) { if (!seen) bad++; pending = 0 } }
        END { if (pending && !seen) bad++; exit bad > 0 }' "$f" || v "$f" "R3 checkout without persist-credentials: false"
@@ -32,5 +35,6 @@ for f in "${files[@]}"; do
   jobs="$(grep -cE '^[[:space:]]+runs-on:' "$f")"; to="$(grep -cE '^[[:space:]]+timeout-minutes:' "$f")"
   [[ "$jobs" == "$to" ]] || v "$f" "R5 $jobs job(s) but $to timeout-minutes"
 done
+[[ "$n_files" -gt 0 ]] || { echo "FAIL — ci-policy: no workflow files found"; exit 1; }
 if [[ "$bad" -gt 0 ]]; then echo "FAIL — ci-policy: $bad violation(s)"; exit 1; fi
 echo "PASS — ci-policy (${#files[@]} workflow file(s): pinned SHAs, least privilege, no persisted creds, no injection vectors, timeouts)"

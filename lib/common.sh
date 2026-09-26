@@ -189,6 +189,9 @@ call_stage() {
       log "$stage: no budget left for another attempt (\$$left)"; CLAUDE_LAST_SUBTYPE="error_max_budget_usd"; return 1
     fi
     if run_claude "$stage" "$model" "$sys" "$input" "$schema" "$left" "$fallback" "$n" "$is_fb"; then return 0; fi
+    # an attempt whose output could not be parsed may have been billed without a recorded
+    # cost; retrying it could overshoot the stage budget, so it is never retried
+    [[ "$CLAUDE_LAST_SUBTYPE" != "unparsed_output" ]] || { log "$stage: unparseable output, not retried (cost unknown)"; return 1; }
     claude_transient "$stage" || return 1
     if [[ "$n" -ge "$max" ]]; then
       if [[ -n "$fallback" && "$fallback" != "$model" ]]; then
@@ -199,6 +202,7 @@ call_stage() {
       log "$stage: giving up after $n attempt(s) (transient: ${CLAUDE_LAST_SUBTYPE:-error})"; return 1
     fi
     delay=$(( base * (1 << (n - 1)) + (base > 0 ? RANDOM % (base + 1) : 0) ))
+    [[ "$delay" -le 120 ]] || delay=120   # cap: stay inside the prompt-cache TTL, never stall the night
     log "$stage: transient failure on attempt $n/$max, retrying in ${delay}s"
     sleep "$delay"
     n=$((n + 1))
@@ -209,7 +213,8 @@ call_stage() {
 # month_spent: model cost already recorded in the ledger for the current calendar month.
 month_spent() {
   [[ -f "${LEDGER:-}" ]] || { echo 0; return; }
-  jq -s --arg m "$(date +%Y-%m)" 'map(select((.ts // "") | startswith($m)) | (.cost_usd // 0)) | add // 0' "$LEDGER" 2>/dev/null || echo 0
+  # line by line: a truncated/corrupt row is skipped instead of zeroing the whole month
+  jq -Rn --arg m "$(date +%Y-%m)" '[inputs | fromjson? | objects | select((.ts // "") | startswith($m)) | (.cost_usd // 0) | numbers] | add // 0' "$LEDGER"
 }
 # cost_guard: before any model call. MONTHLY_BUDGET_USD (0 = off) caps the month; when what is
 # left is below one cheap run the run is skipped with watermarks HELD (the activity stays queued
@@ -217,8 +222,10 @@ month_spent() {
 # is left, so the month can never be overshot by more than rounding.
 cost_guard() {
   local cap="${MONTHLY_BUDGET_USD:-0}" spent left
-  jq -e -n --argjson c "$cap" '$c > 0' >/dev/null 2>&1 || return 0
-  spent="$(month_spent)"
+  # fail CLOSED on a cap that is not a plain number ("$20", "20,00"): a typo must not disable it
+  [[ "$cap" =~ ^[0-9]+(\.[0-9]+)?$ ]] || { DIE_REASON=bad_config; die "MONTHLY_BUDGET_USD='$cap' is not a number (use e.g. 20.00, or 0 to turn the cap off)"; }
+  jq -e -n --argjson c "$cap" '$c > 0' >/dev/null || return 0
+  spent="$(month_spent)" || { DIE_REASON=ledger_unreadable; die "cannot read the ledger to enforce MONTHLY_BUDGET_USD"; }
   left="$(jq -n --argjson c "$cap" --argjson s "$spent" '(($c - $s) * 100 | floor) / 100')"
   MONTH_SPENT="$spent"
   if jq -e -n --argjson l "$left" '$l < 0.05' >/dev/null; then

@@ -89,3 +89,23 @@ Cost: no model tokens | **done** (loop 2, round 4) |
 - **New finding → #21.** Triage **turns vary from 3 to 6** on the same input ($0.054–0.108). That's the largest remaining cost lever.
 | **done** (loop 2, round 11) |
 | 21 | **Turn-count variance.** Triage took 3–6 turns on identical input, and turns drive cost (5,923 vs 1,907 output tokens). Next steps: capture the intermediate structured-output attempts, check whether the tightened schema's bounds (e.g. `maxItems: 6` on highlights) trigger re-generation, and consider `--max-turns` with a fail-closed budget | Could cut the triage cost floor by about half | todo |
+
+## Loop 2: independent review (round 12)
+
+A separate reviewer, who had not seen the work, checked `sota-improvements..sota-loop-2` and reproduced each finding before reporting it. All the confirmed findings are fixed in round 12. Every fix has a regression test, checked to fail on the pre-fix code.
+- **Second XSS layer bypassed (medium).**
+  - **The bypasses:** zero-padded entities (`&#x00000003A;`), a stray quote (`<p x=y" onmouseover=…>`) and, found while fixing, a missing separator after a quoted value (`title="x"onclick=…`).
+  - **The fix:** `html_problem` now tokenizes tags using the HTML attribute grammar (a quote only opens a value right after `=`; atomic groups keep it linear) and decodes any run of leading zeros. A quote-unaware span scan with tab- and newline-split schemes adds a further check.
+  - **Fuzz after the fix:** 4 new base vectors bring it to 1,475 cases. Layer 2 alone now blocks **1,473/1,475**, and the other 2 are proven inert in Chromium. Layer 1 still reduces all 1,475 to bare allowed tags.
+  - **Performance:** at the schema's 30 KB page cap, an adversarial page still validates in 0.7 s, the same as before.
+- **redact.list could defeat or break the canary (medium).**
+  - **The problem:** user terms (`ANA`, `Canary`, hex pairs) rewrote the canary id or marker, which could fake a pass or kill every run. Terms such as `file` or `context` could also trip `input_scan` on our own prompt structure.
+  - **The fix:** the canary now runs through the built-in rules only, in its own call. `input_scan` checks the data headed for the model (bundle, excerpts, candidate text) with every rule's own replacement text removed.
+- **`cost_guard` failed open (medium).** A corrupt ledger line zeroed the month, and a cap like `20,00` silently disabled the guard. Ledger rows are now parsed line by line (bad rows skipped), and a non-numeric cap fails closed (`bad_config`).
+- **ReDoS in the email rule (medium/low).** A 120 KB `a@b.b.b…` line took 50 s. The rule is now bounded, and the same input takes under 1 s.
+- **Smaller fixes (low).**
+  - `grounding_check` now also reads `<pre>` without `<code>`.
+  - An unparseable (mid-stream) model failure is never retried, since its cost is unknown.
+  - Retry backoff is capped at 120 s.
+  - `ci-policy` ignores commented-out `persist-credentials` and fails when there are no workflow files.
+- **Open, plausible only:** `schema_recheck_triage` drops by candidate id, so two candidates sharing an id could drop the valid one. The scrub-coverage test checks that a secret is gone, not which rule removed it.

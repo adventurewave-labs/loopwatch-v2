@@ -93,3 +93,7 @@
 <img src="&#47;&#47;evil.example/p.png">
 <div style="background:u&#114;l(//evil.example/p.png)">x</div>
 <div style="background:\75rl(//evil.example/p.png)">x</div>
+<a href="javascript&#x00000003A;alert(1)">x</a>
+<a href="javascript&#0000000058;alert(1)">x</a>
+<p x=y" onmouseover=alert(1)>hi</p>
+<a x=y" href="javascript:alert(1)">x</a>

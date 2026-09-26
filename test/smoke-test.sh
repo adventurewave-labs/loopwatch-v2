@@ -971,5 +971,52 @@ jq -e '[.resourceSpans[0].scopeSpans[0].spans[1:][] | .attributes[] | select(.ke
   || fail "spans lack gen_ai.usage.cache_creation.input_tokens"
 ok "ledger: cache_write 600, cached 10000, hit ratio 0.769, 2 turns/stage; spans carry cache_creation tokens"
 
+# ═════════════════════════════════════════════════════════════════════════
+setup "loop-2 review: validator bypasses, canary vs redact.list, cost-guard fail-closed, ReDoS, <pre>, retries"
+# (1) second XSS layer: zero-padded entities and a stray quote
+for v in '<a href="javascript&#x00000003A;alert(1)">x</a>' '<a href="javascript&#0000000058;alert(1)">x</a>' '<p x=y" onmouseover=alert(1)>hi</p>'; do
+  printf '<!doctype html><html><body>%s</body></html>' "$v" > "$W/v.html"
+  [[ -n "$(bash -c "source '$SRC_ROOT/lib/publish.sh'; html_problem '$W/v.html'")" ]] || fail "html_problem let through: $v"
+done
+# (2) redact.list entries that collide with the canary id/marker neither fake a failure...
+printf '%s\n' 'ANA' 'Canary' 'file' 'context' 'REDACTED' > "$H/.config/loopwatch/redact.list"
+lw --dry-run || fail "redact.list terms must not break the canary: $(grep FATAL "$LWLOG")"
+jq -e '.canary == "ok"' <(ledger_last) >/dev/null || fail "canary: $(ledger_last | jq -c .canary)"
+# ...nor mask a real scrubber regression
+mkdir -p "$W/src"; cp -R "$SRC_ROOT/bin" "$SRC_ROOT/lib" "$SRC_ROOT/prompts" "$SRC_ROOT/schemas" "$SRC_ROOT/site" "$SRC_ROOT/VERSION" "$W/src/"
+sed -i.bak -e '/\["key",/d' -e '/\["github",/d' "$W/src/lib/redact.sh"
+printf '%s\n' "$(jq -nc '{type:"user",cwd:"/Users/dev/src/turbo-flow",message:{role:"user",content:"Moved the ingest workers onto a dedicated node pool with taints so noisy batch jobs cannot starve the API pods; tolerations live in the worker chart and the pool autoscales from zero."}}')" >> "$TX"
+if "$LW_BASH" "$W/src/bin/loopwatch-run.sh" --dry-run 2> "$W/b.log"; then fail "canary masked by redact.list terms"; fi
+grep -q "a canary secret survived scrubbing" "$W/b.log" || fail "reason: $(grep FATAL "$W/b.log")"
+: > "$H/.config/loopwatch/redact.list"
+# (3) cost guard fails closed: corrupt ledger line, bad cap value
+M="$(date +%Y-%m)"
+{ jq -nc --arg ts "${M}-01T03:30:00-0600" '{ts: $ts, status: "published", cost_usd: 19.99}'; printf '{"ts":"%s-02T03:30' "$M"; echo; } > "$LW_STATE/runs.jsonl"
+conf 'MONTHLY_BUDGET_USD=20'
+: > "$CALLS"; lw || true
+[[ "$(calls)" == 0 ]] && jq -e '.skipped_reason == "monthly_budget_exhausted"' <(ledger_last) >/dev/null || fail "a corrupt ledger line must not reset the month: $(ledger_last)"
+conf "MONTHLY_BUDGET_USD='20,00'"
+if lw; then fail "a non-numeric cap must fail closed"; fi
+jq -e '.skipped_reason == "bad_config"' <(ledger_last) >/dev/null || fail "ledger: $(ledger_last)"
+conf 'MONTHLY_BUDGET_USD=0'
+# (4) email rule is linear: 120KB adversarial line scrubs fast
+t0=$(date +%s)
+{ printf 'a@b'; for _ in $(seq 1 30000); do printf '.bb'; done; echo; } | bash -c "export STATE_DIR='$W/st' RUN_DIR='$W'; source '$SRC_ROOT/lib/redact.sh'; scrub_all" > /dev/null
+[[ $(( $(date +%s) - t0 )) -le 5 ]] || fail "email rule backtracks: $(( $(date +%s) - t0 ))s on 90KB"
+# (5) <pre> without <code> is grounded too
+[[ "$(bash -c "source '$SRC_ROOT/lib/extract.sh'; printf '%s' '<pre>rm -rf /var/lib/kube_data</pre>' | jq -Rc \"\$GROUNDING_JQ\"' code_tokens'")" == '["/var/lib/kube_data"]' ]] || fail "<pre> tokens not extracted"
+# (7) a call that died mid-stream (unparsed output, transient-looking error) is not retried
+conf 'CLAUDE_RETRY_BASE_S=0'
+printf '%s\n' "$(jq -nc '{type:"user",cwd:"/Users/dev/src/turbo-flow",message:{role:"user",content:"Split the ingest queue into a priority lane for interactive re-runs and a bulk lane for nightly backfills, each with its own consumer group and dead-letter topic."}}')" >> "$TX"
+: > "$CALLS"; export STUB_FAIL=hangup
+if lw; then fail "hangup must fail"; fi
+unset STUB_FAIL
+[[ "$(calls)" == 1 ]] || fail "unparsed output must not be retried: $(calls) calls"
+# (8) ci-policy: a commented-out persist-credentials does not count; no files fails
+printf 'name: x\non: push\npermissions:\n  contents: read\njobs:\n  a:\n    runs-on: ubuntu-latest\n    timeout-minutes: 5\n    steps:\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0\n        # persist-credentials: false\n' > "$W/c.yml"
+if bash "$SRC_ROOT/test/ci-policy.sh" "$W/c.yml" >/dev/null; then fail "commented persist-credentials accepted"; fi
+if bash "$SRC_ROOT/test/ci-policy.sh" "$W/none.yml" >/dev/null; then fail "no workflow files must fail"; fi
+ok "zero-padded entities + stray quote blocked; canary immune to redact.list; cost guard fails closed; email rule linear; <pre> grounded; hangup not retried; ci-policy tightened"
+
 echo
 echo "PASS — $N_CASES cases green"

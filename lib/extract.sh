@@ -92,7 +92,7 @@ render_page_files() {
 # dropped (kept under private/ungrounded/<run> for review). GROUNDING=off disables it.
 GROUNDING_JQ='def unent: gsub("&lt;"; "<") | gsub("&gt;"; ">") | gsub("&quot;"; "\"") | gsub("&#39;"; "\u0027") | gsub("&amp;"; "&");
   def code_tokens:
-    [ scan("(?s)<code>(.*?)</code>") | .[0] | unent
+    [ scan("(?s)<(code|pre)>(.*?)</\\1>") | .[1] | gsub("</?code>"; " ") | unent
       | scan("[A-Za-z0-9_./~$@:+=-]{4,}")
       | sub("[.,:;=]+$"; "") | sub("^[.:=]+"; "")
       | select(length >= 4)
@@ -289,7 +289,9 @@ run_extraction() {
 
   build_triage_input
   local leak
-  if ! leak="$(input_scan "$RUN_DIR/triage-input.txt")"; then
+  # the DATA headed for the model (bundle files, verbatim), without our own structure
+  cat "$RUN_DIR"/bundle/transcripts/* "$RUN_DIR"/bundle/git/* > "$RUN_DIR/.scan-triage.txt" 2>/dev/null || true
+  if ! leak="$(input_scan "$RUN_DIR/.scan-triage.txt")"; then
     DIE_REASON=input_leak; die "triage input matches redaction rules ($leak): unscrubbed data would reach the model"
   fi
   log "stage A triage: model=$TRIAGE_MODEL budget=\$$budget_a input=$(( $(file_size "$RUN_DIR/triage-input.txt") / 1024 ))KB"
@@ -328,7 +330,8 @@ run_extraction() {
   fi
 
   build_writer_input
-  if ! leak="$(input_scan "$RUN_DIR/writer-input.txt")"; then
+  { cat "$RUN_DIR"/excerpts/*.txt 2>/dev/null; jq -r '.candidates[] | .title, .category, .why' "$RUN_DIR/candidates.json"; } > "$RUN_DIR/.scan-writer.txt"
+  if ! leak="$(input_scan "$RUN_DIR/.scan-writer.txt")"; then
     DIE_REASON=input_leak; die "writer input matches redaction rules ($leak): unscrubbed data would reach the model"
   fi
   log "stage B writing: model=$MODEL budget=\$$budget_b input=$(( $(file_size "$RUN_DIR/writer-input.txt") / 1024 ))KB"

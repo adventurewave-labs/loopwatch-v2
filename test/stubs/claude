@@ -90,6 +90,7 @@ case "${STUB_FAIL:-}" in
   budget)  result 1.25 true error_max_budget_usd null; exit 1 ;;
   budget0) result 0.31 true error_max_budget_usd null; exit 0 ;;   # error result with exit 0
   crash)   echo "stub crash" >&2; exit 2 ;;
+  hangup)  printf '{"type":"result","subt'; echo "Error: socket hang up" >&2; exit 1 ;;   # died mid-stream
 esac
 
 if [[ "$stage" == "triage" ]]; then

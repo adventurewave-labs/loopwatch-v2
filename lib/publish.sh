@@ -55,8 +55,8 @@ html_problem() {
   jq -Rrs '
     def hexval: ascii_downcase | explode | reduce .[] as $c (0; . * 16 + (if $c >= 97 then $c - 87 else $c - 48 end));
     def decode:
-      gsub("&#[xX](?<h>[0-9a-fA-F]{1,8});?"; (.h | hexval | [.] | implode))
-      | gsub("&#(?<d>[0-9]{1,9});?"; (.d | tonumber | [.] | implode))
+      gsub("&#[xX]0*(?<h>[0-9a-fA-F]{1,6});?"; (.h | hexval | [.] | implode))
+      | gsub("&#0*(?<d>[0-9]{1,7});?"; (.d | tonumber | [.] | implode))
       | gsub("&(?i:colon);"; ":") | gsub("&(?i:sol);"; "/") | gsub("&(?i:tab);"; "\t") | gsub("&(?i:newline);"; "\n")
       | gsub("&(?i:lpar);"; "(") | gsub("&(?i:rpar);"; ")") | gsub("&(?i:period);"; ".") | gsub("&(?i:bsol);"; "\\\\")
       | gsub("&(?i:quot);"; "\"") | gsub("&(?i:apos);"; "\u0027") | gsub("&(?i:lt);"; "<") | gsub("&(?i:gt);"; ">") | gsub("&(?i:amp);"; "&");
@@ -73,15 +73,23 @@ html_problem() {
                  | {n: (.[0] | ascii_downcase), v: (.[1] | sub("^[\"\u0027]"; "") | sub("[\"\u0027]$"; "") | decode)} ];
     . as $raw
     | ($raw | decode) as $dec
-    | [ $raw | scan("<[A-Za-z!/?](?:\"[^\"]*\"|\u0027[^\u0027]*\u0027|[^\"\u0027>])*>") | {name: tagname, attrs: attrs, dec: decode} ] as $tags
+    # tags tokenised like the HTML attribute grammar: a quote only opens a value right after
+    # "=", an unquoted value runs to whitespace or ">" (a stray quote is part of it), and a
+    # ">" inside a quoted value does not end the tag. Atomic groups keep it linear.
+    | [ $raw | scan("</?[A-Za-z](?>[^\\s/>]*)(?>[\\s/]*(?>[^\\s/>=]+)(?>\\s*=\\s*(?>\"[^\"]*\"|\u0027[^\u0027]*\u0027|[^\\s>]*))?)*[\\s/]*>|<[!?][^>]*>") | {name: tagname, attrs: attrs, dec: decode} ] as $tags
+    # quote-UNaware view as well: a stray quote (`<p x=y" onmouseover=…>`) makes the quote-aware
+    # scan miss the whole tag, while a browser treats that quote as part of an unquoted value
+    | [ $raw | scan("<[A-Za-z][^<>]*>") | decode ] as $rawspans
     | if ($raw | test("<\\s*script"; "i")) then "inline or external <script>"
       elif ($tags | any(.name | test("^(script|iframe|object|embed|frame|frameset|applet|base|form|link|portal|svg|math|isindex|keygen|template|noscript|xmp|video|audio|source|marquee|details|dialog|input|button|select|textarea)$")))
         then "embedding/active element"
       elif ($tags | any(.name == "meta" and (.attrs | any(.n == "http-equiv")))) then "meta http-equiv"
       elif ($tags | any(.attrs | any(.n | startswith("on")))) or ($tags | any(.dec | test("[\\s/\"\u0027]on[a-z]+\\s*="; "i")))
+            or ($rawspans | any(test("[\\s/\"\u0027]on[a-z]+\\s*="; "i")))
         then "on* event handler"
       elif ($tags | any(.attrs | any(.n == "srcset" or .n == "srcdoc" or .n == "popovertarget"))) then "srcset/srcdoc/popover attribute"
       elif ($tags | any(.attrs | any((.n | test("^(src|href|action|formaction|poster|data|background|xlink:href|ping|cite|longdesc|lowsrc|dynsrc|manifest|codebase|archive)$")) and (.v | bad_url))))
+          or ($rawspans | any(test("[\\s/\"\u0027](src|href|action|formaction|poster|data|background|xlink:href|ping|cite|codebase|archive)\\s*=\\s*[\"\u0027]?\\s*(" + ([ "javascript:", "vbscript:", "https:", "http:" ] | map(split("") | join("[\\t\\n\\r]*")) | join("|")) + "|//)"; "i")))
         then "external or scriptable URL in an attribute"
       elif ((($dec | css) | test("url\\s*\\(|@import|expression\\s*\\(|image-set\\s*\\("; "i"))
             or ($tags | any(.attrs | any(.n == "style" and (.v | css | test("url\\s*\\(|expression\\s*\\(|image-set\\s*\\("; "i"))))))

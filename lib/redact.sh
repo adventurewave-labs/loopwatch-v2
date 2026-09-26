@@ -49,7 +49,7 @@ builtin_rules_json() {
     ["bearer",     "bearer\\s+[A-Za-z0-9._~+/=-]{20,}", "i"],
     ["conn-creds", "[A-Za-z][A-Za-z0-9+.-]*://[^\\s:/@]+:[^\\s@/]+@", ""],
     ["assignment", "(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key)[\"'"'"']?\\s*[:=]\\s*[\"'"'"']?(?=[^\\s\"'"'"',;]*[0-9])[^\\s\"'"'"',;]{8,}", "i"],
-    ["email",      "[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)*\\.[A-Za-z]{2,}", ""]
+    ["email",      "[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\\.[A-Za-z0-9-]{1,63}){0,8}\\.[A-Za-z]{2,24}", ""]
   ] | map({kind: .[0], re: .[1], flags: .[2],
             repl: ("[REDACTED:" + .[0] + "]" + (if .[0] == "conn-creds" then "@" else "" end))})'
 }
@@ -80,16 +80,13 @@ build_rules() {
 
 scrub_all() {
   [[ -n "${RULES_JSON:-}" && -f "$RULES_JSON" ]] || build_rules
-  if [[ -n "${CANARY_ID:-}" ]]; then
-    # Runtime self-test: every scrubbed stream carries a line of per-run canary secrets
-    # (shaped to hit several built-in rules) through the SAME jq call as the real data.
-    # canary_strip removes that line afterwards and records a leak if any canary survived.
-    { canary_line; cat; } | jq -rR --slurpfile rules "$RULES_JSON" \
-      'reduce $rules[0][] as $r (.; gsub($r.re; $r.repl; $r.flags))' | canary_strip
-  else
-    jq -rR --slurpfile rules "$RULES_JSON" \
-      'reduce $rules[0][] as $r (.; gsub($r.re; $r.repl; $r.flags))'
-  fi
+  # Runtime self-test: each scrubbed stream first scrubs a line of per-run canary secrets
+  # with the same jq program and the BUILT-IN rules (redact.list terms are user regexes that
+  # could otherwise rewrite the canary id or marker and fake a pass or a failure), then scrubs
+  # the data. A surviving canary is recorded as a leak; nothing canary-related enters the output.
+  if [[ -n "${CANARY_ID:-}" ]]; then canary_check; fi
+  jq -rR --slurpfile rules "$RULES_JSON" \
+    'reduce $rules[0][] as $r (.; gsub($r.re; $r.repl; $r.flags))'
 }
 
 # ── per-run canary (privacy pipeline self-test) ─────────────────────────
@@ -103,10 +100,12 @@ canary_line() {
   printf '@@lw-canary@@ sk-%s0123456789 ghp_%sABCDEFGH AKIA%s token=%s1234 lw-%s@canary.invalid Bearer %sabcdefghijkl\n' \
     "$CANARY_ID" "$CANARY_ID" "$CANARY_ID" "$CANARY_ID" "$CANARY_ID" "$CANARY_ID"
 }
-canary_strip() {
-  awk -v id="$CANARY_ID" -v leak="$RUN_DIR/.canary-leak" -v seen="$RUN_DIR/.canary-streams" '
-    index($0, "@@lw-canary@@") == 1 { print "1" >> seen; if (index($0, id)) print $0 >> leak; next }
-    { print }'
+canary_check() {
+  local out
+  out="$(canary_line | jq -rR --slurpfile rules "$RULES_JSON" '
+    reduce ($rules[0][] | select(.kind | startswith("redact.list") | not)) as $r (.; gsub($r.re; $r.repl; $r.flags))')"
+  echo 1 >> "$RUN_DIR/.canary-streams"
+  case "$out" in *"$CANARY_ID"*) printf '%s\n' "$out" >> "$RUN_DIR/.canary-leak" ;; esac
 }
 # canary_verify <expect-streams>: fails (1) with a reason when a canary survived scrubbing,
 # when the id shows up anywhere in the run dir, or when bundle files exist that never went
@@ -128,7 +127,15 @@ canary_verify() {
 # (scrub replaced every match). A hit means data reached the model input without scrubbing.
 input_scan() {
   local hits
-  hits="$(postscan_hits "$1")"
+  [[ -n "${RULES_JSON:-}" && -f "$RULES_JSON" ]] || build_rules
+  # Callers pass the DATA headed for the model (bundle files, excerpts, candidate text), not
+  # the assembled prompt, and every replacement the rules themselves inserted ([REDACTED:*]
+  # markers, custom "=>repl" text) is removed first, so a redact.list term that happens to
+  # match our own structure or its own marker cannot fake a leak and stop every run.
+  hits="$(jq -rRs --slurpfile rules "$RULES_JSON" '
+      ($rules[0] | map(.repl) | unique | sort_by(-length)) as $reps
+      | reduce $reps[] as $r (.; split($r) | join(" "))
+      | . as $t | $rules[0][] | select(. as $r | $t | test($r.re; $r.flags)) | .kind' "$1" 2>/dev/null | sort -u)"
   [[ -z "$hits" ]] || { printf '%s' "$hits" | tr '\n' ',' | sed 's/,$//'; return 1; }
 }
 
