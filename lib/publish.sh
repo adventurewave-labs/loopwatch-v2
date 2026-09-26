@@ -133,18 +133,63 @@ $hl_html
 EOF
 }
 
+# near_dups <meta.json>  ->  "<new-slug>\t<existing-slug>\t<score>" per near-duplicate page
+#
+# Exact-slug dedup misses the same topic written up twice under different slugs (a page
+# re-derived from a later session, or two candidates on one decision). Each page's title +
+# summary becomes a set of normalized word tokens (lowercased, stopwords and 1-2 char tokens
+# dropped, a crude plural fold) and is compared by Jaccard similarity with every catalog entry
+# and every page kept earlier in this run. Title overlap counts double, because titles are
+# the densest statement of a page's topic. A score >= NEAR_DUP_THRESHOLD (default 0.55; 0 turns
+# the guard off) marks the page as a duplicate. Deterministic, jq only, no dependencies.
+near_dups() {
+  local meta="$1" th="${NEAR_DUP_THRESHOLD:-0.55}"
+  if ! [[ "$th" =~ ^(0|0?\.[0-9]+|1|1\.0+)$ ]]; then
+    log "WARN: NEAR_DUP_THRESHOLD='$th' is not a number in [0,1]; using 0.55"; th=0.55
+  fi
+  awk -v t="$th" 'BEGIN { exit !(t > 0) }' || return 0
+  jq -r --slurpfile m "$MANIFEST" --argjson th "$th" '
+    def stop: ["the","and","for","with","from","into","that","this","via","when","why","how",
+               "are","was","not","but","its","our","use","using","vs","per","one","two","all"];
+    def toks: ascii_downcase | [scan("[a-z0-9]+")] | map(select(length > 2))
+              | map(if (length > 3 and endswith("s") and (endswith("ss") | not)) then .[:-1] else . end)
+              | map(select(. as $t | stop | index($t) | not)) | unique;
+    def sig: {t: ((.title // "") | toks), s: ((.summary // "") | toks)};
+    def jac($a; $b): if ($a + $b | length) == 0 then 0
+                     else ([$a[] | select(. as $x | $b | index($x))] | length) / (($a + $b) | unique | length) end;
+    # title tokens appear twice (as t:... and plain), so title overlap is weighted double
+    def bag: [(.t[] | "t:" + .), (.t[]), (.s[])] | unique;
+    def score($x; $y): jac($x | bag; $y | bag);
+    reduce .pages[] as $p (
+      {seen: [$m[0].entries[] | {slug, sig: sig}], out: []};
+      ($p | sig) as $ps
+      | ([.seen[] | {slug, sc: score($ps; .sig)}] | max_by(.sc)) as $best
+      | if ($best != null and $best.sc >= $th and $best.slug != $p.slug)
+        then .out += [[$p.slug, $best.slug, ($best.sc * 100 | round / 100 | tostring)]]
+        else .seen += [{slug: $p.slug, sig: $ps}] end
+    ) | .out[] | @tsv' "$meta"
+}
+
 publish_run() {
   local meta="$1"
   local year installed=0 skipped=0
   year="$(date +%Y)"
 
-  # dedup against manifest + install pages
+  # dedup against manifest + install pages: exact slug first, then near-duplicates
+  near_dups "$meta" > "$RUN_DIR/near-dups.tsv"
   : > "$RUN_DIR/installed-slugs.txt"
-  local slug file
+  local slug file nd
   while IFS=$'\t' read -r slug file; do
     [[ -n "$slug" ]] || continue
     if jq -e --arg s "$slug" '.entries | any(.slug == $s)' "$MANIFEST" >/dev/null; then
       log "dedup: slug already in catalog, skipping: $slug"
+      skipped=$((skipped + 1))
+      continue
+    fi
+    nd="$(awk -F'\t' -v s="$slug" '$1 == s { print $2 " (similarity " $3 ")"; exit }' "$RUN_DIR/near-dups.tsv")"
+    if [[ -n "$nd" ]]; then
+      log "dedup: near-duplicate of $nd, skipping: $slug"
+      NEAR_DUP_DROPS=$((${NEAR_DUP_DROPS:-0} + 1))
       skipped=$((skipped + 1))
       continue
     fi

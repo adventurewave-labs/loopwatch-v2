@@ -114,6 +114,7 @@ ledger_append() {
     --argjson trimmed "${TRIMMED_BYTES:-0}" \
     --argjson drops "${POSTSCAN_DROPS:-0}" \
     --argjson vdrops "${VALIDATOR_DROPS:-0}" \
+    --argjson ndrops "${NEAR_DUP_DROPS:-0}" \
     --arg sbskip "${STAGE_B_SKIP:-}" \
     --argjson dry "$([[ "${DRY_RUN:-false}" == "true" ]] && echo true || echo false)" '
     {
@@ -128,7 +129,7 @@ ledger_append() {
       skipped_reason: (if $skipped == "" then null else $skipped end),
       status: $status, run_id: $run_id, dry_run: $dry,
       bundle_bytes: $bundle_bytes, trimmed_bytes: $trimmed, postscan_drops: $drops,
-      validator_drops: $vdrops,
+      validator_drops: $vdrops, near_dup_drops: $ndrops,
       stage_b_skipped: (if $sbskip == "" then null else $sbskip end),
       stages: map({stage, model, cost_usd, in, cached, out, subtype})
     }' "$usage")" || return 1

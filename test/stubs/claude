@@ -7,7 +7,7 @@
 # Env knobs:
 #   STUB_CALLS        file that gets one line per model invocation
 #   STUB_INPUTS       dir: each call's stdin is saved there as <stage>-<n>.txt
-#   STUB_PAGES        one (default) | none | unsafe | unsafe2 | client | category | two — what the writer returns
+#   STUB_PAGES        one (default) | none | unsafe | unsafe2 | client | category | two | paraphrase — what the writer returns
 #   STUB_TRIAGE       one (default) | none | garbage | traversal    — what triage returns
 #   STUB_TRIAGE_COST  cost the triage stage reports (default 0.03)
 #   STUB_FAIL         budget | budget0 | crash                       — simulate a failed call (budget0: error result, exit 0)
@@ -106,6 +106,9 @@ p=""
 add() { p="${p:+$p,}$1"; }
 case "${STUB_PAGES:-one}" in
   none) ;;
+  paraphrase)   # same topic as "one" under a different slug, plus an unrelated page
+       add "$(pg cronjob-work-queue-for-turbo-flow "Turbo-Flow ingest via K8s CronJob and a work queue")"
+       add "$(pg spot-pool-pdb-batch "Spot node pool with a PDB for batch ingest")" ;;
   one) add "$(pg k8s-cronjob-queue-ingest "Turbo-Flow ingest: CronJob + work queue")" ;;
   two) add "$(pg k8s-cronjob-queue-ingest "Turbo-Flow ingest: CronJob + work queue")"
        add "$(pg spot-pool-pdb-batch "Spot pool + PDB for batch ingest")" ;;

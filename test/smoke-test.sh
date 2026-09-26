@@ -672,5 +672,39 @@ grep -q "WARN: OTLP export to collector returned 503" "$LWLOG" || fail "collecto
 [[ "$(ledger_last | jq -r .status)" == failed ]] || fail "collector failure must not change the run outcome"
 ok "failed run exports error status; collector 503 only warns"
 
+# ═════════════════════════════════════════════════════════════════════════
+setup "near-duplicate guard: same topic under a new slug is dropped, new topic kept"
+lw
+jq -e '.entries | length == 1' "$SITE/manifest.json" >/dev/null || fail "first publish"
+printf '%s\n' "$(jq -nc '{type:"user",cwd:"/Users/dev/src/turbo-flow",message:{role:"user",content:"Revisited the ingest design: CronJob still feeds the work queue, and we moved batch workers to a spot pool with a PDB of 1 so evictions cannot stall the backlog. Queue depth is exported as a Prometheus gauge and the HPA scales workers on backlog rather than CPU."}}')" >> "$TX"
+STUB_PAGES=paraphrase lw
+grep -q "near-duplicate of k8s-cronjob-queue-ingest (similarity" "$LWLOG" || fail "paraphrase not flagged: $(grep dedup "$LWLOG")"
+jq -e '[.entries[].slug] == ["k8s-cronjob-queue-ingest", "spot-pool-pdb-batch"]' "$SITE/manifest.json" >/dev/null \
+  || fail "manifest: $(jq -c '[.entries[].slug]' "$SITE/manifest.json")"
+jq -e '.near_dup_drops == 1 and .pages == 1' <(ledger_last) >/dev/null || fail "ledger: $(ledger_last | jq -c '{pages, near_dup_drops}')"
+ok "paraphrased page dropped (ledger near_dup_drops=1), unrelated page published"
+# calibration pairs: real-shaped paraphrases score high, same-project different topics score low
+nd_score() {
+  jq -n --arg t "$1" --arg s "$2" '{version:1, entries:[{slug:"aaa-old", title:$t, summary:$s}]}' > "$W/m.json"
+  jq -n --arg t "$3" --arg s "$4" '{pages:[{slug:"bbb-new", title:$t, summary:$s}]}' > "$W/p.json"
+  MANIFEST="$W/m.json" NEAR_DUP_THRESHOLD=0.01 bash -c "source '$SRC_ROOT/lib/publish.sh'; near_dups '$W/p.json'" | cut -f3
+}
+dup1="$(nd_score "Structured mode for headless claude -p" "Tool-free schema-constrained calls cut cost 83% per page." \
+                 "Headless claude -p structured mode: tool-free, schema-constrained" "Schema-constrained tool-free calls; cost per page down about 83%.")"
+far1="$(nd_score "Turbo-Flow ingest: CronJob + work queue" "CronJob enqueues work; idempotent workers drain the queue." \
+                 "Turbo-Flow ingest: spot node pool with a PDB" "Batch ingest runs on spot nodes; a PDB of 1 prevents eviction stalls.")"
+far2="$(nd_score "Railway deploy for the catalog server" "Basic Auth server that fails closed with 503 when unconfigured." \
+                 "Railway deploy for the Turbo Rig dashboard" "Dashboard service on Railway with a Postgres volume and nightly backups.")"
+awk -v d="$dup1" -v a="$far1" -v b="$far2" 'BEGIN { exit !(d >= 0.55 && a < 0.4 && b < 0.4) }' \
+  || fail "calibration: paraphrase=$dup1 (want >=0.55), same-project other topics=$far1,$far2 (want <0.4)"
+ok "calibration: paraphrase $dup1, different topics $far1 / $far2"
+setup "near-duplicate guard can be turned off"
+conf 'NEAR_DUP_THRESHOLD=0'
+lw
+printf '%s\n' "$(jq -nc '{type:"user",cwd:"/Users/dev/src/turbo-flow",message:{role:"user",content:"Revisited the ingest design: CronJob still feeds the work queue, and we moved batch workers to a spot pool with a PDB of 1 so evictions cannot stall the backlog. Queue depth is exported as a Prometheus gauge and the HPA scales workers on backlog rather than CPU."}}')" >> "$TX"
+STUB_PAGES=paraphrase lw
+jq -e '.entries | length == 3' "$SITE/manifest.json" >/dev/null || fail "threshold 0 must disable the guard"
+ok "NEAR_DUP_THRESHOLD=0 disables it"
+
 echo
 echo "PASS — $N_CASES cases green"
