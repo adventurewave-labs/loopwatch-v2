@@ -61,7 +61,14 @@ Cost: no model tokens | **done** (loop 2, round 4) |
 `test/ci-policy.sh` is a dependency-free policy gate that runs in CI and smoke. It checks pinning, permissions, persisted credentials, `pull_request_target` and `github.event.*` injection vectors, and timeouts. It found **13 violations before and 0 after**, and smoke confirms a risky workflow trips all 6 rules.
 
 **Also found:** the catalog's own CI markup scan would have *failed on safe pages* after round 5, because it matched handlers that had been escaped to text. That's fixed here and in the deployed catalog repo (loopwatch-catalog PR #1) | **done** (loop 2, round 7) |
-| 17 | **Cost guardrails over time.** A monthly `MONTHLY_BUDGET_USD` cap computed from the ledger (fails closed), and an anomaly flag when a run costs more than 3× the rolling median, surfaced in the PR body and the ledger | Per-run caps alone don't stop a month of drift | todo |
+| 17 | **Cost guardrails over time.** A monthly `MONTHLY_BUDGET_USD` cap computed from the ledger (fails closed), and an anomaly flag when a run costs more than 3× the rolling median, surfaced in the PR body and the ledger | Per-run caps alone don't stop a month of drift. **Shipped:**
+- **Monthly cap.** `MONTHLY_BUDGET_USD` (default $20; measured runs cost $0.09–0.32, so that's roughly 60–200 nightly runs of headroom) is checked against the ledger before any model call. With less than $0.05 left, the run is **skipped with watermarks held**, so the activity stays queued rather than lost. Otherwise the run budget is **clamped** to what's left, so the month can't be overshot.
+- **Anomaly flag.** A run costing at least `COST_ANOMALY_FACTOR` (3) times the rolling median of the last 14 runs with model calls (at least 5 needed) gets `cost_anomaly` and `cost_median_usd` in the ledger, a WARN log, and a note in the catalog PR body or comment. `loopwatch ledger` shows month-to-date spend and the anomaly count.
+- **Smoke:**
+  - $19.97 of $20 spent means 0 calls with watermarks held, and a prior month's $500 is ignored;
+  - $19.50 spent clamps the writer's budget to $0.47;
+  - $0.15 against a $0.02 median is flagged in the ledger, the PR body and `loopwatch ledger`.
+| **done** (loop 2, round 8) |
 | 18 | **Catalog search upgrade** (was #7) | Better recall three months later | todo |
 | 19 | **Secret-scrub coverage parity.** Test the scrubber against the positive samples of common gitleaks rules (AWS, GCP, GitHub fine-grained, Slack, Stripe, JWT, private keys, OpenAI/Anthropic keys) and close the gaps | Measured coverage instead of a hand-curated pattern list | todo |
 | 20 | **Prompt-caching measurement** (was #8, live and cheap) | Only if the numbers justify it | todo |

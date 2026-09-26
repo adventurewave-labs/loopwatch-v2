@@ -105,6 +105,10 @@ cmd_ledger() {
           pages: (map(.pages) | add), cost_usd: (map(.cost_usd) | add * 10000 | round / 10000),
           median_cost_usd: (map(select(.model != null) | .cost_usd) | sort | if length == 0 then 0 else .[length / 2 | floor] end)}' "$ledger" \
     | jq -r '"all-time: \(.runs) runs, \(.model_calls_runs) with model calls, \(.pages) pages, $\(.cost_usd) total, median $\(.median_cost_usd)/run with calls"'
+  jq -rs --arg m "$(date +%Y-%m)" --arg cap "${MONTHLY_BUDGET_USD:-}" '
+    (map(select((.ts // "") | startswith($m)) | (.cost_usd // 0)) | add // 0) as $s
+    | "this month (\($m)): $\($s * 10000 | round / 10000)" + (if $cap == "" then "" else " of $\($cap) cap" end)
+      + "; cost anomalies: \(map(select(.cost_anomaly == true)) | length)"' "$ledger"
 }
 
 sub="${1:-help}"; shift || true

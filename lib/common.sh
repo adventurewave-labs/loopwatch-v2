@@ -203,6 +203,45 @@ call_stage() {
   done
 }
 
+# ── cost guardrails over time ───────────────────────────────────────────
+# month_spent: model cost already recorded in the ledger for the current calendar month.
+month_spent() {
+  [[ -f "${LEDGER:-}" ]] || { echo 0; return; }
+  jq -s --arg m "$(date +%Y-%m)" 'map(select((.ts // "") | startswith($m)) | (.cost_usd // 0)) | add // 0' "$LEDGER" 2>/dev/null || echo 0
+}
+# cost_guard: before any model call. MONTHLY_BUDGET_USD (0 = off) caps the month; when what is
+# left is below one cheap run the run is skipped with watermarks HELD (the activity stays queued
+# for the next run instead of being lost); otherwise this run's BUDGET_USD is clamped to what
+# is left, so the month can never be overshot by more than rounding.
+cost_guard() {
+  local cap="${MONTHLY_BUDGET_USD:-0}" spent left
+  jq -e -n --argjson c "$cap" '$c > 0' >/dev/null 2>&1 || return 0
+  spent="$(month_spent)"
+  left="$(jq -n --argjson c "$cap" --argjson s "$spent" '(($c - $s) * 100 | floor) / 100')"
+  MONTH_SPENT="$spent"
+  if jq -e -n --argjson l "$left" '$l < 0.05' >/dev/null; then
+    log "monthly budget reached: \$$spent of \$$cap spent this month — skipping, activity stays queued"
+    finish skipped monthly_budget_exhausted 0
+    exit 0
+  fi
+  if jq -e -n --argjson l "$left" --argjson b "$BUDGET_USD" '$l < $b' >/dev/null; then
+    log "monthly budget: \$$left left of \$$cap — this run's budget clamped from \$$BUDGET_USD"
+    BUDGET_USD="$left"
+    TRIAGE_BUDGET_USD="$(jq -n --argjson a "$TRIAGE_BUDGET_USD" --argjson l "$left" '[$a, $l] | min')"
+  fi
+}
+# cost_anomaly <cost>: prints the rolling median when <cost> is >= COST_ANOMALY_FACTOR x the
+# median of the last 14 ledger runs that made model calls (needs >= 5 of them); else nothing.
+cost_anomaly() {
+  local cost="$1"
+  [[ -f "${LEDGER:-}" ]] || return 0
+  jq -rs --argjson c "$cost" --argjson f "${COST_ANOMALY_FACTOR:-3}" '
+    [ .[] | select((.cost_usd // 0) > 0) | .cost_usd ] | .[-14:] | sort as $x
+    | if ($x | length) < 5 then empty
+      else ($x[($x | length) / 2 | floor]) as $med
+           | if $c >= $f * $med then ($med * 10000 | round / 10000) else empty end end' "$LEDGER" 2>/dev/null || true
+}
+
 # ── run ledger (Turbo Rig seam, R-12) ───────────────────────────────────
 # One JSON line per run in $LEDGER, field names aligned with Turbo Rig's
 # gate-log (ts, repo, target, model, in, cached, out, cost_usd, duration_ms)
@@ -229,6 +268,7 @@ ledger_append() {
     --arg pv "${PROMPT_VERSION:-}" \
     --arg canary "${CANARY_STATUS:-}" \
     --argjson gdrops "${GROUNDING_DROPS:-0}" --argjson ungr "${UNGROUNDED_TOKENS:-0}" \
+    --arg anom "${COST_ANOMALY_MEDIAN:-}" \
     --argjson cstreams "$( [[ -f "${RUN_DIR:-/nonexistent}/.canary-streams" ]] && wc -l < "$RUN_DIR/.canary-streams" | tr -d ' ' || echo 0)" \
     --arg sbskip "${STAGE_B_SKIP:-}" \
     --argjson dry "$([[ "${DRY_RUN:-false}" == "true" ]] && echo true || echo false)" '
@@ -237,6 +277,7 @@ ledger_append() {
       prompt_version: (if $pv == "" then null else $pv end),
       canary: (if $canary == "" then null else $canary end), canary_streams: $cstreams,
       grounding_drops: $gdrops, ungrounded_tokens: $ungr,
+      cost_anomaly: ($anom != ""), cost_median_usd: (if $anom == "" then null else ($anom | tonumber) end),
       model: ((map(.model) | unique | join("+")) | if . == "" then null else . end),
       in:      (map(.in)       | add // 0),
       cached:  (map(.cached)   | add // 0),

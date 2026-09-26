@@ -49,6 +49,8 @@ source "$CONF"
 : "${EXPORT_MD_DIR:=}"
 : "${EXPORT_DIGEST_TO:=}"
 : "${NEAR_DUP_THRESHOLD:=0.55}"
+: "${MONTHLY_BUDGET_USD:=20.00}"         # calendar-month cap across runs (0 = off); fails closed, activity stays queued
+: "${COST_ANOMALY_FACTOR:=3}"           # flag a run costing >= this x the rolling median
 : "${GROUNDING:=on}"                   # code-token groundedness guard (on|off)
 : "${GROUNDING_DROP_MIN:=4}"           # drop a page with >= this many unsupported code tokens (and >= half)
 : "${OTEL_EXPORT_DIR:=}"
@@ -244,7 +246,13 @@ if [[ "$SKIP_EMPTY" == "true" ]] && ! has_activity; then
   exit 0
 fi
 
+cost_guard
 run_extraction
+RUN_COST="$(jq -s 'map(.cost_usd) | add // 0' "$RUN_DIR/usage.jsonl")"
+COST_ANOMALY_MEDIAN="$(cost_anomaly "$RUN_COST")"
+if [[ -n "$COST_ANOMALY_MEDIAN" ]]; then
+  log "WARN: cost anomaly: this run cost \$$RUN_COST, >= ${COST_ANOMALY_FACTOR:-3}x the rolling median \$$COST_ANOMALY_MEDIAN"
+fi
 if ! why="$(canary_verify 0)"; then
   DIE_REASON=canary_leak; die "privacy self-test failed after extraction: $why"
 fi

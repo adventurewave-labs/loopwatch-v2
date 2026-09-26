@@ -37,6 +37,8 @@ MAX_CANDIDATES=5
 EXCERPT_MAX_KB=24            # per candidate
 EXCERPT_TOTAL_KB=80
 INCLUDE_TOOL_CALLS=true      # keep "[tool:Name] <command/path>" lines (results are always dropped)
+MONTHLY_BUDGET_USD="20.00"   # calendar-month cap across all runs (0 = off); a run that would exceed it is skipped, activity stays queued
+COST_ANOMALY_FACTOR=3        # flag (ledger + PR) a run costing >= 3x the rolling median
 FALLBACK_MODEL="haiku"       # writer falls back to this when MODEL is overloaded ("" = never)
 CLAUDE_RETRIES=2             # retries on transient failures (overload, 429/5xx, network); never on budget caps
 THINKING_TOKENS=0            # extended-thinking budget per call; 0 = off (most of the triage output cost when on)

@@ -913,5 +913,35 @@ if grep -qiE "$pat" "$W/escaped.html"; then fail "catalog CI would reject a page
 grep -qiE "$pat" "$W/raw.html" || fail "catalog CI must reject a raw handler"
 ok "workflows pinned + least-privilege; 6 risky patterns caught; catalog markup scan tells escaped text from a raw handler"
 
+# ═════════════════════════════════════════════════════════════════════════
+setup "cost guardrails: monthly cap fails closed, clamps the run budget; anomalies flagged"
+mkdir -p "$LW_STATE"
+M="$(date +%Y-%m)"
+row() { jq -nc --arg ts "$1" --argjson c "$2" '{ts: $ts, repo: "loopwatch", target: "nightly", status: "published", model: "haiku+sonnet", cost_usd: $c, pages: 1}'; }
+{ row "${M}-01T03:30:00-0600" 19.97; row "2020-01-01T03:30:00-0600" 500; } > "$LW_STATE/runs.jsonl"
+conf 'MONTHLY_BUDGET_USD=20'
+lw
+[[ "$(calls)" == 0 ]] || fail "no model call may happen once the month is spent"
+jq -e '.status == "skipped" and .skipped_reason == "monthly_budget_exhausted"' <(ledger_last) >/dev/null || fail "ledger: $(ledger_last)"
+jq -e '.files | length == 0' "$LW_STATE/watermarks.json" >/dev/null 2>&1 || [[ ! -f "$LW_STATE/watermarks.json" ]] || fail "activity must stay queued (watermarks held)"
+ok "month spent (\$19.97 of \$20; an old month's \$500 ignored): skipped with 0 calls, watermarks held"
+# 19.50 spent -> this run's budget is clamped to the $0.50 left
+{ row "${M}-01T03:30:00-0600" 19.50; } > "$LW_STATE/runs.jsonl"
+lw
+grep -q 'monthly budget: \$0.5 left of \$20 — this run.s budget clamped from \$1.00' "$LWLOG" || fail "clamp not logged: $(grep monthly "$LWLOG")"
+grep "stage=extract" "$CALLS" | grep -q "budget=0.4[0-9]* " || fail "writer budget must come out of the clamped \$0.50: $(grep stage=extract "$CALLS" | grep -o 'budget=[^ ]*')"
+ok "\$0.50 left in the month: run budget clamped, writer got $(grep stage=extract "$CALLS" | grep -o 'budget=[^ ]*')"
+
+setup "cost guardrails: a run >= 3x the rolling median is flagged in ledger and PR"
+mkdir -p "$LW_STATE"
+for i in 1 2 3 4 5 6; do jq -nc '{ts: "2026-01-0\($i)T03:30:00-0600", status: "published", model: "haiku+sonnet", cost_usd: 0.02, pages: 1}' --argjson i "$i"; done > "$LW_STATE/runs.jsonl"
+lw
+jq -e '.cost_anomaly == true and .cost_median_usd == 0.02' <(ledger_last) >/dev/null || fail "ledger: $(ledger_last | jq -c '{cost_usd, cost_anomaly, cost_median_usd}')"
+grep -q "Cost anomaly:\*\* this run cost \$0.15" "$STUB_GH_STATE"/pr-*-body.md || fail "PR body lacks the anomaly note: $(tail -3 "$STUB_GH_STATE"/pr-*-body.md)"
+lw --dry-run
+jq -e '.cost_anomaly == false or .cost_anomaly == true' <(ledger_last) >/dev/null
+bash "$SRC_ROOT/bin/loopwatch" ledger 3 | grep -q "cost anomalies: 1" || fail "loopwatch ledger should count anomalies: $(bash "$SRC_ROOT/bin/loopwatch" ledger 3 | tail -1)"
+ok "\$0.15 vs median \$0.02: cost_anomaly in ledger, note in the PR body, counted by 'loopwatch ledger'"
+
 echo
 echo "PASS — $N_CASES cases green"
