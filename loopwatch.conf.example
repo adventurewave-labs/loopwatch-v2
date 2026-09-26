@@ -46,7 +46,7 @@ SKIP_EMPTY=true
 # ── Publish (R-9) ────────────────────────────────────────────────────────
 # Each run commits to loopwatch/<date> in the catalog repo and opens a PR; while a
 # loopwatch PR is open, later runs add to it. Nothing is ever pushed to CATALOG_BASE.
-CATALOG_REPO="adventurewave-labs/loopwatch-catalog"
+CATALOG_REPO="marcuspat/loopwatch-catalog"   # personal account: Vercel Hobby cannot deploy private org repos
 CATALOG_BASE="main"
 # CATALOG_DIR="$HOME/.local/state/loopwatch/catalog"   # tool-managed clone (default)
 

@@ -71,7 +71,7 @@ Measured on claude 2.1.283 (dry runs, not a monthly average): a no-page day cost
 
 ## Publishing model
 
-The catalog is a separate private repo (`CATALOG_REPO`, default `adventurewave-labs/loopwatch-catalog`) holding `site/` only. loopwatch keeps a tool-managed clone under `~/.local/state/loopwatch/catalog`.
+The catalog is a separate private repo (`CATALOG_REPO`, default `marcuspat/loopwatch-catalog`) holding `site/` only. loopwatch keeps a tool-managed clone under `~/.local/state/loopwatch/catalog`.
 
 - **Branches and PRs.** A run with no open loopwatch PR starts a fresh `loopwatch/<date>-<time>` branch from `main` and opens a PR. While a loopwatch PR is open, later runs add commits to it, so there is at most one open PR and `manifest.json` never conflicts. If `gh` can't say whether a PR is open, the run fails rather than risk a second one.
 - **Closing a PR discards it.** A closed PR's branch is never reused, so its content is not re-proposed and not re-mined.
