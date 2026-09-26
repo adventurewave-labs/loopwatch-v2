@@ -12,6 +12,9 @@
 #                                    Use it before merging prompt or schema changes.
 #   test/eval/run-eval.sh --record   LIVE run that then REPLACES the golden (recorded outputs,
 #                                    bundle and PROMPT_VERSION). Use after a --live run you accept.
+#   test/eval/judge.sh               LIVE page-QUALITY eval (opt-in, Haiku, ~$0.04 per page): rubric
+#                                    scores against judge-baseline.json; --calibrate proves the judge
+#                                    catches planted claims.
 #
 # Provenance: recorded/PROMPT_VERSION is the prompt_version (hash of prompts + schemas) the
 # golden was recorded under. Offline mode fails when they drift, so a prompt edit can't pass CI

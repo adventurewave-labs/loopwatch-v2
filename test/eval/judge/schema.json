@@ -1,0 +1,13 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["faithfulness", "specificity", "reusability", "clarity", "unsupported", "verdict"],
+  "properties": {
+    "faithfulness": {"type": "integer", "minimum": 1, "maximum": 5},
+    "specificity":  {"type": "integer", "minimum": 1, "maximum": 5},
+    "reusability":  {"type": "integer", "minimum": 1, "maximum": 5},
+    "clarity":      {"type": "integer", "minimum": 1, "maximum": 5},
+    "unsupported":  {"type": "array", "maxItems": 12, "items": {"type": "string", "maxLength": 300}},
+    "verdict":      {"type": "string", "maxLength": 400}
+  }
+}

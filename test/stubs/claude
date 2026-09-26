@@ -41,6 +41,14 @@ input="$(cat)"
 
 stage=extract
 if printf '%s' "$sys" | grep -q 'LOOPWATCH-STAGE: triage'; then stage=triage; fi
+# judge (test/eval/judge.sh): STUB_JUDGE=good (default) | low (faithfulness 2, a claim listed)
+if printf '%s' "$sys" | grep -q 'LOOPWATCH-STAGE: judge'; then
+  echo "call stage=judge model=$model budget=$budget tools=[$tools]" >> "${STUB_CALLS:-/dev/null}"
+  f=5; u='[]'; [[ "${STUB_JUDGE:-good}" == low ]] && { f=2; u='["invented kubectl flag"]'; }
+  jq -nc --argjson f "$f" --argjson u "$u" '{type:"result", subtype:"success", is_error:false, total_cost_usd:0.01,
+    structured_output:{faithfulness:$f, specificity:5, reusability:5, clarity:5, unsupported:$u, verdict:"stub verdict"}}'
+  exit 0
+fi
 has_bundle=no; printf '%s' "$input" | grep -q '<file path="bundle/' && has_bundle=yes
 has_excerpt=no; printf '%s' "$input" | grep -q '<excerpt id=' && has_excerpt=yes
 schema_ok=no; printf '%s' "$schema" | jq -e 'type == "object"' >/dev/null 2>&1 && schema_ok=yes

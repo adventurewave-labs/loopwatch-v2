@@ -751,6 +751,15 @@ if grep -q '<nav>' "$SITE/pages/$YEAR/k8s-cronjob-queue-ingest.html"; then fail 
 ok "2 topical pages linked (escaped title, ../2025/ href), baking page and unsafe path left out, page re-validated; 0 = off"
 
 # ═════════════════════════════════════════════════════════════════════════
+setup "LLM-as-judge eval: haiku, tool-free, budget-capped; low faithfulness fails (backlog #27)"
+CLAUDE_BIN="$SRC_ROOT/test/stubs/claude" "$LW_BASH" "$SRC_ROOT/test/eval/judge.sh" > "$W/judge.txt" 2>&1 || fail "judge on the golden: $(cat "$W/judge.txt")"
+grep -q "PASS — judge (within 0.75 of baseline" "$W/judge.txt" || fail "judge output: $(cat "$W/judge.txt")"
+grep "stage=judge" "$CALLS" | grep -q "model=haiku budget=0.10 tools=\[\]" || fail "judge call must be haiku, budget-capped, tool-free: $(grep stage=judge "$CALLS")"
+if STUB_JUDGE=low CLAUDE_BIN="$SRC_ROOT/test/stubs/claude" "$LW_BASH" "$SRC_ROOT/test/eval/judge.sh" > "$W/judge2.txt" 2>&1; then fail "faithfulness 2 must fail the judge"; fi
+grep -q "faithfulness 2 (< 4)" "$W/judge2.txt" || fail "judge failure reason: $(tail -2 "$W/judge2.txt")"
+ok "golden page judged within baseline; call is haiku/tool-free/budget-capped; faithfulness 2 fails with the claim listed"
+
+# ═════════════════════════════════════════════════════════════════════════
 setup "near-duplicate guard: same topic under a new slug is dropped, new topic kept"
 lw
 jq -e '.entries | length == 1' "$SITE/manifest.json" >/dev/null || fail "first publish"
