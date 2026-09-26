@@ -251,6 +251,26 @@ cost_anomaly() {
            | if $c >= $f * $med then ($med * 10000 | round / 10000) else empty end end' "$LEDGER" 2>/dev/null || true
 }
 
+# ── data retention ──────────────────────────────────────────────────────
+# retention_prune: delete what loopwatch keeps on disk beyond RETENTION_DAYS (default 30;
+# 0 = keep forever): run logs, failure autopsies (whole run dirs, scrubbed bundle included),
+# and the private copies of near-duplicate and ungrounded pages. The ledger (counts and costs
+# only, no content) and the watermarks are never pruned. Sets PRUNED to the entries removed.
+PRUNED=0
+retention_prune() {
+  local days="${RETENTION_DAYS:-30}" d e
+  [[ "$days" =~ ^[0-9]+$ ]] || { DIE_REASON=bad_config; die "RETENTION_DAYS='$days' is not a whole number of days (0 = keep forever)"; }
+  [[ "$days" -gt 0 ]] || return 0
+  for d in "$STATE_DIR/logs" "$STATE_DIR/failed" "$STATE_DIR/private/near-dups" "$STATE_DIR/private/ungrounded"; do
+    [[ -d "$d" ]] || continue
+    while IFS= read -r e; do
+      [[ -n "$e" && "$e" == "$d/"* ]] || continue
+      rm -rf "$e" && PRUNED=$((PRUNED + 1))
+    done < <(find "$d" -mindepth 1 -maxdepth 1 -mtime +"$days" 2>/dev/null)
+  done
+  [[ "$PRUNED" -eq 0 ]] || log "retention: pruned $PRUNED entr$([[ "$PRUNED" -eq 1 ]] && echo y || echo ies) older than $days days"
+}
+
 # ── run ledger (Turbo Rig seam, R-12) ───────────────────────────────────
 # One JSON line per run in $LEDGER, field names aligned with Turbo Rig's
 # gate-log (ts, repo, target, model, in, cached, out, cost_usd, duration_ms)
@@ -276,7 +296,7 @@ ledger_append() {
     --argjson ndrops "${NEAR_DUP_DROPS:-0}" \
     --arg pv "${PROMPT_VERSION:-}" \
     --arg canary "${CANARY_STATUS:-}" \
-    --argjson gdrops "${GROUNDING_DROPS:-0}" --argjson ungr "${UNGROUNDED_TOKENS:-0}" \
+    --argjson gdrops "${GROUNDING_DROPS:-0}" --argjson ungr "${UNGROUNDED_TOKENS:-0}" --argjson pruned "${PRUNED:-0}" \
     --arg anom "${COST_ANOMALY_MEDIAN:-}" \
     --argjson cstreams "$( [[ -f "${RUN_DIR:-/nonexistent}/.canary-streams" ]] && wc -l < "$RUN_DIR/.canary-streams" | tr -d ' ' || echo 0)" \
     --arg sbskip "${STAGE_B_SKIP:-}" \
@@ -285,7 +305,7 @@ ledger_append() {
       ts: $ts, repo: "loopwatch", target: $target,
       prompt_version: (if $pv == "" then null else $pv end),
       canary: (if $canary == "" then null else $canary end), canary_streams: $cstreams,
-      grounding_drops: $gdrops, ungrounded_tokens: $ungr,
+      grounding_drops: $gdrops, ungrounded_tokens: $ungr, pruned: $pruned,
       cost_anomaly: ($anom != ""), cost_median_usd: (if $anom == "" then null else ($anom | tonumber) end),
       model: ((map(.model) | unique | join("+")) | if . == "" then null else . end),
       in:      (map(.in)       | add // 0),

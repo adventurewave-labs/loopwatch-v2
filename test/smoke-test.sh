@@ -1037,5 +1037,28 @@ jq -e '.candidates | length == 1 and .[0].title == "Turbo-Flow ingest: CronJob +
   || fail "candidates: $(jq -c '[.candidates[].title]' "$LW_STATE/run/candidates.json")"
 ok "invalid duplicate at index 1 dropped; the valid c1 kept and written"
 
+# ═════════════════════════════════════════════════════════════════════════
+setup "data retention: old logs, autopsies and private page copies are pruned; ledger kept"
+S="$LW_STATE"; mkdir -p "$S/logs" "$S/failed/2020-01-01_0300/bundle" "$S/private/near-dups/2020-01-01_0300" "$S/private/ungrounded/2020-01-01_0300" "$S/failed/fresh"
+echo old > "$S/logs/2020-01-01_0300.log"; echo scrubbed > "$S/failed/2020-01-01_0300/bundle/x.txt"; echo p > "$S/private/near-dups/2020-01-01_0300/p.html"
+echo p > "$S/private/ungrounded/2020-01-01_0300/p.html"; echo recent > "$S/failed/fresh/keep.txt"
+echo '{"ts":"2020-01-01T03:30:00-0600","status":"published","cost_usd":0.1}' > "$S/runs.jsonl"
+touch -t 202001010300 "$S/logs/2020-01-01_0300.log" "$S/failed/2020-01-01_0300" "$S/private/near-dups/2020-01-01_0300" "$S/private/ungrounded/2020-01-01_0300"
+lw --dry-run
+for gone in logs/2020-01-01_0300.log failed/2020-01-01_0300 private/near-dups/2020-01-01_0300 private/ungrounded/2020-01-01_0300; do
+  [[ ! -e "$S/$gone" ]] || fail "not pruned: $gone"
+done
+[[ -f "$S/failed/fresh/keep.txt" ]] || fail "recent autopsy must be kept"
+grep -q '2020-01-01T03:30' "$S/runs.jsonl" || fail "the ledger must never be pruned"
+jq -e '.pruned == 4' <(ledger_last) >/dev/null || fail "ledger pruned: $(ledger_last | jq .pruned)"
+grep -q "retention: pruned 4 entries older than 30 days" "$LWLOG" || fail "prune not logged"
+# RETENTION_DAYS=0 keeps everything; a bad value fails closed
+mkdir -p "$S/private/near-dups/old2"; touch -t 202001010300 "$S/private/near-dups/old2"
+conf 'RETENTION_DAYS=0'; lw --dry-run
+[[ -d "$S/private/near-dups/old2" ]] || fail "RETENTION_DAYS=0 must keep everything"
+conf "RETENTION_DAYS='30d'"
+if lw --dry-run; then fail "a non-numeric RETENTION_DAYS must fail closed"; fi
+ok "4 old entries pruned (logs, autopsy with scrubbed bundle, near-dup + ungrounded copies); recent autopsy and ledger kept; 0 = keep; bad value fails closed"
+
 echo
 echo "PASS — $N_CASES cases green"

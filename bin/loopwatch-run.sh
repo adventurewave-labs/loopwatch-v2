@@ -51,6 +51,7 @@ source "$CONF"
 : "${NEAR_DUP_THRESHOLD:=0.55}"
 : "${MONTHLY_BUDGET_USD:=20.00}"         # calendar-month cap across runs (0 = off); fails closed, activity stays queued
 : "${COST_ANOMALY_FACTOR:=3}"           # flag a run costing >= this x the rolling median
+: "${RETENTION_DAYS:=30}"              # prune logs/autopsies/private page copies older than this (0 = keep)
 : "${GROUNDING:=on}"                   # code-token groundedness guard (on|off)
 : "${GROUNDING_DROP_MIN:=4}"           # drop a page with >= this many unsupported code tokens (and >= half)
 : "${OTEL_EXPORT_DIR:=}"
@@ -182,6 +183,7 @@ on_exit() {
 }
 trap 'on_exit $?' EXIT
 
+retention_prune
 rm -rf "$RUN_DIR"
 mkdir -p "$RUN_DIR/bundle/transcripts" "$RUN_DIR/bundle/git" "$RUN_DIR/pages"
 : > "$RUN_DIR/usage.jsonl"

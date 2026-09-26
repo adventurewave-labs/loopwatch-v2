@@ -119,7 +119,12 @@ A separate reviewer, who had not seen the work, checked `sota-improvements..sota
 - **Drop by position.** `schema_recheck_triage` now drops invalid candidates **by position** in the raw answer and then re-parses. Before this, an invalid candidate that reused a valid candidate's id took the valid one down with it. Smoke confirms the old code lost it and the new code keeps and writes it.
 - **Rule attribution.** Scrub coverage now asserts which rule caught each sample (a `<kind>|<rule>|<text>` corpus). Before, 50/53 were attributed correctly; OpenAI project keys, Anthropic keys and AWS secret keys were only caught by the generic `sk-`/assignment rules. Dedicated `openai`, `anthropic` and `aws` secret rules now give **53/53 attributed to the intended provider**, so the ledger and postscan name the actual leaked provider.
 | **done** (loop 3, round 2) |
-| 23 | **Data retention:** prune old run dirs, logs, autopsies, `private/near-dups` and `private/ungrounded` after `RETENTION_DAYS` | Scrubbed content shouldn't accumulate on disk indefinitely (privacy hygiene) | todo |
+| 23 | **Data retention:** prune old run dirs, logs, autopsies, `private/near-dups` and `private/ungrounded` after `RETENTION_DAYS` | Scrubbed content shouldn't accumulate on disk indefinitely (privacy hygiene). **Shipped:** `retention_prune` runs at the start of every run, after the lock is taken.
+- **What it deletes:** run logs, failure autopsies (whole run dirs, scrubbed bundle included), and the private near-duplicate and ungrounded page copies, once they're older than `RETENTION_DAYS` (default 30).
+- **What it never deletes:** the ledger (counts and costs only) and the watermarks.
+- **Settings:** `0` keeps everything; a non-numeric value fails closed. The ledger records the count in `pruned`.
+- **Smoke:** 4 aged entries are pruned while a recent autopsy and the ledger are kept.
+| **done** (loop 3, round 3) |
 | 24 | **Property-based tests for watermarks:** random append, truncate and rotate sequences check that no line is ever lost or duplicated | Tests the collector's core invariant, not just hand-picked cases | todo |
 | 25 | **Mutation testing of the safety code:** flip conditions in the validator, scrubber and budget code, and measure the share of mutants the suite kills | Measures test strength instead of assuming it | todo |
 | 26 | **Related pages:** BM25 similarity at publish writes a static "Related" list into each page's footer (CSP-safe, no JS) | Better recall three months later, with navigation between pages | todo |
