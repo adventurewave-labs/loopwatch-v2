@@ -106,6 +106,7 @@ ledger_append() {
     --argjson trimmed "${TRIMMED_BYTES:-0}" \
     --argjson drops "${POSTSCAN_DROPS:-0}" \
     --argjson vdrops "${VALIDATOR_DROPS:-0}" \
+    --arg sbskip "${STAGE_B_SKIP:-}" \
     --argjson dry "$([[ "${DRY_RUN:-false}" == "true" ]] && echo true || echo false)" '
     {
       ts: $ts, repo: "loopwatch", target: $target,
@@ -120,6 +121,7 @@ ledger_append() {
       status: $status, run_id: $run_id, dry_run: $dry,
       bundle_bytes: $bundle_bytes, trimmed_bytes: $trimmed, postscan_drops: $drops,
       validator_drops: $vdrops,
+      stage_b_skipped: (if $sbskip == "" then null else $sbskip end),
       stages: map({stage, model, cost_usd, in, cached, out, subtype})
     }' "$usage" >> "$LEDGER"
 }

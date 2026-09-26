@@ -26,7 +26,7 @@ setup() {
   LW_STATE="$H/.local/state/loopwatch"
   CALLS="$W/claude-calls.log"; : > "$CALLS"
   export STUB_CALLS="$CALLS"
-  unset STUB_PAGES STUB_TRIAGE STUB_FAIL STUB_HELP_FLAGS STUB_MARKER STUB_DIGEST STUB_HIGHLIGHT 2>/dev/null || true
+  unset STUB_TRIAGE_COST STUB_PAGES STUB_TRIAGE STUB_FAIL STUB_HELP_FLAGS STUB_MARKER STUB_DIGEST STUB_HIGHLIGHT 2>/dev/null || true
   LWLOG=""
 
   REPO="$W/catalog"
@@ -78,18 +78,20 @@ ok "page, manifest, digest, commit"
 B="$LW_STATE/run/bundle/transcripts"
 grep -q "CronJob plus work queue" "$B"/*.txt || fail "user text missing from bundle"
 grep -q "idempotent" "$B"/*.txt || fail "assistant text missing from bundle"
-for bad in "harness-injected" "inline reminder" "private reasoning" "tool output noise" "subagent chatter" "kubectl get"; do
+for bad in "harness-injected" "inline reminder" "private reasoning" "tool output noise" "subagent chatter"; do
   if grep -q "$bad" "$B"/*.txt; then fail "filter leaked: $bad"; fi
 done
+grep -q "^\[tool:Bash\] kubectl get cronjobs" "$B"/*.txt || fail "tool call should be kept as a compact [tool:Name] line"
 grep -q "=== source: claude-code:turbo-flow" "$B"/*.txt || fail "source header should name the project from cwd"
-ok "2.1 schema filter: isMeta/isSidechain/thinking/tool noise/system-reminders dropped"
+ok "2.1 schema filter: isMeta/isSidechain/thinking/tool results/system-reminders dropped; tool calls compacted"
 if grep -rq "ghp_abcdefghijklmnopqrstuvwxyz123456" "$SITE" "$LW_STATE"; then fail "planted secret leaked"; fi
 ok "planted secret scrubbed"
 jq -e '.repo == "loopwatch" and .target == "manual" and .status == "published" and .pages == 1
        and .cost_usd > 0 and .in > 0 and .cached > 0 and .out > 0 and (.ts | test("^[0-9]{4}-"))' \
    <(ledger_last) >/dev/null || fail "ledger line malformed: $(ledger_last)"
 grep -q -- "persist=false" "$CALLS" || fail "--no-session-persistence not passed"
-grep -q -- "budget=1.00" "$CALLS" || fail "--max-budget-usd not passed"
+grep -q -- "stage=triage model=haiku .*budget=0.30 tools=Read,Glob,Grep " "$CALLS" || fail "triage call wrong: $(cat "$CALLS")"
+grep -q -- "stage=extract model=sonnet .*budget=0.97 " "$CALLS" || fail "stage B should get the remaining budget: $(cat "$CALLS")"
 ok "ledger line valid (cost/tokens parsed from --output-format json); spend cap + no-persist flags passed"
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -277,6 +279,53 @@ grep -q "^FAIL.*redact.list" "$W/pf.txt" || fail "bad regex not reported"
 rm -f "$H/.config/loopwatch/redact.list"
 if "$SRC_ROOT/bin/loopwatch-run.sh" --preflight > "$W/pf.txt" 2>&1; then fail "missing redact.list should fail preflight"; fi
 ok "ALLOW_PUBLIC override warns; bad or missing redact.list fails"
+
+# ═════════════════════════════════════════════════════════════════════════
+setup "two-tier: empty triage never calls stage B (R-3)"
+export STUB_TRIAGE=none
+lw
+[[ "$(calls)" == "1" ]] || fail "expected exactly 1 (triage) call, got $(calls)"
+grep -q "stage=triage model=haiku" "$CALLS" || fail "triage must use the cheap model"
+if grep -q "stage=extract" "$CALLS"; then fail "stage B ran on an empty candidate list"; fi
+jq -e '.model == "haiku" and .pages == 0 and .stage_b_skipped == "no_candidates" and .status == "published"' <(ledger_last) >/dev/null \
+  || fail "ledger should show a haiku-only run: $(ledger_last)"
+test -f "$SITE/digests/$TODAY.html" || fail "digest should still publish on a no-page day"
+grep -q "Quiet day\|Settled" "$SITE/digests/$TODAY.html" || fail "digest should carry the triage summary"
+ok "0 candidates: 1 haiku call, no sonnet, digest still published, ledger model=haiku"
+
+# ═════════════════════════════════════════════════════════════════════════
+setup "two-tier: stage B sees only cited excerpts"
+lw
+grep "stage=extract" "$CALLS" | grep -q "bundle=no excerpts=c1.txt," || fail "stage B must run without the bundle, with excerpts: $(cat "$CALLS")"
+test -f "$LW_STATE/run/excerpts/c1.txt" || fail "excerpt not written"
+grep -q "CronJob plus work queue" "$LW_STATE/run/excerpts/c1.txt" || fail "excerpt lacks the cited lines"
+test -d "$LW_STATE/run/bundle/transcripts" || fail "bundle not restored after stage B"
+if grep -q "root:" "$LW_STATE/run/excerpts/c1.txt"; then fail "evidence outside the bundle was read"; fi
+jq -e '.model == "haiku+sonnet" and (.stages | length) == 2 and .cost_usd == 0.15' <(ledger_last) >/dev/null || fail "ledger stages wrong: $(ledger_last)"
+jq -e '.digests[0].summary | test("Settled")' "$SITE/manifest.json" >/dev/null || fail "digest must come from triage"
+ok "excerpts only, ../ evidence ignored, bundle restored, ledger sums both stages"
+
+# ═════════════════════════════════════════════════════════════════════════
+setup "two-tier: traversal-only evidence drops the candidate; garbage triage fails closed"
+export STUB_TRIAGE=traversal
+lw
+if grep -q "stage=extract" "$CALLS"; then fail "candidate with only out-of-bundle evidence should be dropped"; fi
+ok "out-of-bundle evidence ignored; candidate dropped before stage B"
+setup "garbage triage"
+export STUB_TRIAGE=garbage
+if lw; then fail "unparseable triage should fail the run"; fi
+jq -e '.skipped_reason == "triage_parse_error"' <(ledger_last) >/dev/null || fail "parse error not in ledger"
+jq -e '.files | length == 0' "$LW_STATE/watermarks.json" >/dev/null || fail "watermarks advanced after a failed triage"
+ok "unparseable triage: failed, watermarks held"
+
+# ═════════════════════════════════════════════════════════════════════════
+setup "two-tier: triage eats the budget -> stage B skipped"
+conf 'BUDGET_USD=0.30'
+export STUB_TRIAGE_COST=0.28
+lw
+if grep -q "stage=extract" "$CALLS"; then fail "stage B should not run with < \$0.05 left"; fi
+jq -e '.stage_b_skipped == "budget"' <(ledger_last) >/dev/null || fail "budget skip not in ledger: $(ledger_last)"
+ok "stage B skipped when the run budget is spent"
 
 echo
 echo "PASS — $N_CASES cases green"

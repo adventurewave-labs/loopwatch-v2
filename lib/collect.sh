@@ -12,16 +12,25 @@
 # Claude Code 2.1.x schema (docs/revival-notes.md): drops isMeta (harness-injected)
 # and isSidechain (subagent) lines, lines whose cwd is loopwatch's own run dir
 # (second self-ingestion guard), and inline <system-reminder> blocks.
+# Tool calls are kept as one compact "[tool:Name] <command/path>" line each (tool
+# RESULTS are always dropped): in agentic sessions most of the work is tool calls, and
+# a text-only filter keeps ~0.1% of the transcript. INCLUDE_TOOL_CALLS=false restores v0.1.
 # Tolerant of schema drift: unparseable lines are skipped.
 filter_transcript() {
-  jq -r --arg rundir "$RUN_DIR" '
+  jq -r --arg rundir "$RUN_DIR" --arg tools "${INCLUDE_TOOL_CALLS:-true}" '
+    def tool_line:
+      "[tool:" + (.name // "?") + "] "
+      + ((.input // {}) | (.command // .file_path // .path // .url // .pattern // .query // .description // .prompt
+                           // (tostring)) | tostring | gsub("\\s+"; " ") | .[0:200]);
     select(.type == "user" or .type == "assistant")
     | select((.isMeta // false) != true and (.isSidechain // false) != true)
     | select(((.cwd // "") | (. == $rundir or endswith("/loopwatch/run"))) | not)
     | .message as $m
     | (($m.content // empty)
        | if type == "string" then .
-         else ([ .[]? | select(.type? == "text") | .text ] | join("\n"))
+         else ([ .[]? | if .type? == "text" then .text
+                        elif .type? == "tool_use" and $tools == "true" then tool_line
+                        else empty end ] | join("\n"))
          end)
     | gsub("(?s)<system-reminder>.*?</system-reminder>"; "")
     | gsub("^\\s+|\\s+$"; "") as $t

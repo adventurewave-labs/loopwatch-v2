@@ -5,7 +5,8 @@
 # Env knobs:
 #   STUB_CALLS        file that gets one line per model invocation
 #   STUB_PAGES        one (default) | none | unsafe | client | two   — what the extract stage writes
-#   STUB_TRIAGE       one (default) | none                          — what the triage stage returns
+#   STUB_TRIAGE       one (default) | none | garbage | traversal    — what the triage stage returns
+#   STUB_TRIAGE_COST  cost the triage stage reports (default 0.03)
 #   STUB_FAIL         budget | crash                                 — simulate a failed call
 #   STUB_MARKER       text planted in the persisted session transcript (self-ingestion test)
 #   STUB_DIGEST / STUB_HIGHLIGHT   override the digest summary / add a highlight
@@ -33,7 +34,8 @@ done
 
 stage=extract
 if printf '%s' "$prompt" | grep -q 'LOOPWATCH-STAGE: triage'; then stage=triage; fi
-echo "call stage=$stage model=$model persist=$persist budget=$budget tools=$tools cwd=$PWD" >> "${STUB_CALLS:-/dev/null}"
+bundle_seen=no; [[ -d bundle ]] && bundle_seen=yes
+echo "call stage=$stage model=$model persist=$persist budget=$budget tools=$tools bundle=$bundle_seen excerpts=$(ls excerpts 2>/dev/null | tr '\n' ',') cwd=$PWD" >> "${STUB_CALLS:-/dev/null}"
 
 # Emulate Claude Code session persistence: without --no-session-persistence the CLI
 # writes the whole session (prompt context included) under ~/.claude/projects/<encoded cwd>/.
@@ -77,19 +79,27 @@ meta_entry() {  # meta_entry <slug> <title>
 }
 
 if [[ "$stage" == "triage" ]]; then
-  if [[ "${STUB_TRIAGE:-one}" == "none" ]]; then
-    result 0.02 false success '{"digest_summary":"Quiet day: routine edits only.","highlights":["routine edits"],"candidates":[]}'
-  else
-    first="$(ls bundle/transcripts 2>/dev/null | head -1)"
-    result 0.03 false success "Here is the triage:
-\`\`\`json
-{\"digest_summary\":\"Settled the Turbo-Flow ingest architecture: K8s CronJob feeding a work queue.\",
- \"highlights\":[\"ingest architecture decided\"],
- \"candidates\":[{\"id\":\"c1\",\"title\":\"Turbo-Flow ingest: CronJob + work queue\",\"category\":\"infra/kubernetes\",
-   \"why\":\"architecture decision with tradeoffs\",
-   \"evidence\":[{\"file\":\"bundle/transcripts/${first:-missing.txt}\",\"start_line\":1,\"end_line\":40}]}]}
-\`\`\`"
+  digest="${STUB_DIGEST:-Settled the Turbo-Flow ingest architecture: K8s CronJob feeding a work queue.}"
+  if [[ "${STUB_TRIAGE:-one}" == "garbage" ]]; then
+    result 0.02 false success "I could not decide, sorry."
+    exit 0
   fi
+  first="$(ls bundle/transcripts 2>/dev/null | head -1)"
+  cands='[]'
+  case "${STUB_TRIAGE:-one}" in
+    one)
+      cands="$(jq -nc --arg f "bundle/transcripts/${first:-missing.txt}" '[{id:"c1", title:"Turbo-Flow ingest: CronJob + work queue",
+        category:"infra/kubernetes", why:"architecture decision with tradeoffs",
+        evidence:[{file:$f, start_line:2, end_line:3}, {file:"../../etc/passwd", start_line:1, end_line:5}]}]')" ;;
+    traversal)
+      cands='[{"id":"c1","title":"x","category":"ideas","why":"x","evidence":[{"file":"bundle/../../../etc/passwd","start_line":1,"end_line":9},{"file":"/etc/hosts","start_line":1,"end_line":9}]}]' ;;
+  esac
+  obj="$(jq -nc --arg d "$digest" --arg hl "${STUB_HIGHLIGHT:-}" --argjson c "$cands" \
+    '{digest_summary:$d, highlights:(["ingest architecture decided"] + (if $hl == "" then [] else [$hl] end)), candidates:$c}')"
+  result "${STUB_TRIAGE_COST:-0.03}" false success "Here is the triage:
+\`\`\`json
+$obj
+\`\`\`"
   exit 0
 fi
 

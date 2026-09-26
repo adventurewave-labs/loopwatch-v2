@@ -19,8 +19,15 @@ source "$CONF"
 # defaults (config may override any of these)
 : "${STATE_DIR:=${XDG_STATE_HOME:-$HOME/.local/state}/loopwatch}"
 : "${CLAUDE_BIN:=claude}"
-: "${MODEL:=sonnet}"
+: "${MODEL:=sonnet}"                    # stage B (writing)
 : "${MAX_TURNS:=50}"
+: "${TRIAGE_MODEL:=haiku}"             # stage A (triage)
+: "${TRIAGE_MAX_TURNS:=30}"
+: "${TRIAGE_BUDGET_USD:=0.30}"
+: "${MAX_CANDIDATES:=5}"
+: "${EXCERPT_MAX_KB:=24}"
+: "${EXCERPT_TOTAL_KB:=80}"
+: "${EXCERPT_CONTEXT_LINES:=5}"
 : "${BUDGET_USD:=1.00}"
 : "${MAX_FILE_KB:=120}"
 : "${MAX_BUNDLE_KB:=300}"
@@ -89,6 +96,8 @@ source "$ROOT_DIR/lib/publish.sh"
 source "$ROOT_DIR/lib/redact.sh"
 # shellcheck disable=SC1091
 source "$ROOT_DIR/lib/preflight.sh"
+# shellcheck disable=SC1091
+source "$ROOT_DIR/lib/extract.sh"
 
 if [[ "$PREFLIGHT_ONLY" == "true" ]]; then
   preflight
@@ -115,9 +124,11 @@ BUNDLE_BYTES=0
 TRIMMED_BYTES=0
 POSTSCAN_DROPS=0
 VALIDATOR_DROPS=0
+STAGE_B_SKIP=""
 LEDGER_DONE=false
 
 autopsy() {
+  restore_bundle 2>/dev/null || true
   cp -R "$RUN_DIR" "$STATE_DIR/failed/$RUN_TS" 2>/dev/null || true
   log "autopsy saved: $STATE_DIR/failed/$RUN_TS"
   # keep the 5 most recent autopsies
@@ -161,16 +172,9 @@ if [[ "$SKIP_EMPTY" == "true" ]] && ! has_activity; then
   exit 0
 fi
 
-log "extraction: $CLAUDE_BIN -p (model=$MODEL, budget=\$$BUDGET_USD)"
-if ! run_claude extract "$MODEL" "$ROOT_DIR/prompts/extract.md" "Read,Write,Glob,Grep" "$MAX_TURNS" "$BUDGET_USD"; then
-  case "$CLAUDE_LAST_SUBTYPE" in
-    *budget*) DIE_REASON=budget_exceeded; die "claude -p hit the \$$BUDGET_USD budget cap (watermarks not advanced)" ;;
-    *)        DIE_REASON=claude_error;    die "claude -p failed (subtype=$CLAUDE_LAST_SUBTYPE) — see extract.json/extract.err in the autopsy dir" ;;
-  esac
-fi
+run_extraction
 
 META="$RUN_DIR/run-meta.json"
-[[ -f "$META" ]] || { DIE_REASON=no_meta; die "extractor produced no run-meta.json"; }
 validate_meta "$META"
 postscan "$META"
 N_PAGES="$(jq '.pages | length' "$META")"

@@ -19,8 +19,16 @@ GIT_REPOS=()
 
 # ── Cost (R-1, R-2) ──────────────────────────────────────────────────────
 CLAUDE_BIN="claude"          # absolute path (`which claude`) for scheduled runs
-MODEL="sonnet"
-BUDGET_USD="1.00"            # hard cap per run, passed as --max-budget-usd when supported
+# Two-tier extraction (R-3): cheap triage reads the whole bundle; the writer runs
+# only when triage found candidates, and sees only the cited excerpts.
+TRIAGE_MODEL="haiku"
+TRIAGE_BUDGET_USD="0.30"     # stage A cap (also bounded by BUDGET_USD)
+MODEL="sonnet"               # stage B (writing)
+BUDGET_USD="1.00"            # hard cap per run across both stages (--max-budget-usd per call)
+MAX_CANDIDATES=5
+EXCERPT_MAX_KB=24            # per candidate
+EXCERPT_TOTAL_KB=80
+INCLUDE_TOOL_CALLS=true      # keep "[tool:Name] <command/path>" lines (results are always dropped)
 MAX_TURNS=50                 # passed only if the CLI lists --max-turns (PASS_MAX_TURNS=true forces it)
 MAX_FILE_KB=120              # per-source delta cap after filtering
 MAX_BUNDLE_KB=300            # whole-bundle cap; oldest content is trimmed first
