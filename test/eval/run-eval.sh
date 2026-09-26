@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# loopwatch eval harness.
+#
+#   test/eval/run-eval.sh            OFFLINE (default, runs in CI): feeds a frozen sample day through
+#                                    the real pipeline, answering each model call with the RECORDED
+#                                    real output from claude 2.1.283. Asserts golden behaviour: the
+#                                    bundle is rebuilt byte-for-byte, calls are tool-free and
+#                                    schema-pinned, and pages, drops, digest and ledger cost all match.
+#   test/eval/run-eval.sh --live     LIVE (opt-in, costs money, about $0.15-0.40): same sample day,
+#                                    real models. Reports pages/cost/latency against the golden run and
+#                                    fails if quality collapses (0 pages) or cost exceeds 2x golden.
+#                                    Use it before merging prompt or schema changes.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SRC_ROOT="$(cd "$HERE/../.." && pwd)"
+FIX="$HERE/fixtures/day1"
+MODE="${1:-offline}"
+LW_BASH="${LW_BASH:-$BASH}"
+
+W="$(mktemp -d "${TMPDIR:-/tmp}/loopwatch-eval.XXXXXX")"
+trap 'rm -rf "$W"' EXIT
+fail() { echo "FAIL [eval $MODE]: $*" >&2; [[ -f "$W/run.log" ]] && tail -20 "$W/run.log" >&2; exit 1; }
+ok()   { echo "  ok: $*"; }
+
+export HOME="$W/home"
+unset XDG_CONFIG_HOME XDG_STATE_HOME LOOPWATCH_CONF 2>/dev/null || true
+STATE="$HOME/.local/state/loopwatch"
+mkdir -p "$HOME/.config/loopwatch" "$HOME/.claude/projects"
+cp -R "$FIX/transcripts/." "$HOME/.claude/projects/"
+: > "$HOME/.config/loopwatch/redact.list"; chmod 600 "$HOME/.config/loopwatch/redact.list"
+
+# catalog remote seeded from site/
+BARE="$W/catalog.git"; git init -q --bare "$BARE"; git -C "$BARE" symbolic-ref HEAD refs/heads/main
+mkdir -p "$W/seed"; cp -R "$SRC_ROOT/site" "$W/seed/site"
+git -C "$W/seed" init -q
+git -C "$W/seed" -c user.name=eval -c user.email=eval@test add -A
+git -C "$W/seed" -c user.name=eval -c user.email=eval@test commit -qm seed
+git -C "$W/seed" push -q "$BARE" HEAD:refs/heads/main
+export STUB_GH_REMOTE="$BARE" STUB_GH_STATE="$W/gh" STUB_GH_CALLS="$W/gh-calls.log"; mkdir -p "$W/gh"
+
+if [[ "$MODE" == "--live" ]]; then
+  CLAUDE_BIN="$(command -v claude)" || fail "claude CLI not found"
+else
+  CLAUDE_BIN="$HERE/replay-claude"
+  export REPLAY_DIR="$FIX/recorded" REPLAY_OUT="$W/replay"
+fi
+cat > "$HOME/.config/loopwatch/loopwatch.conf" <<EOF
+CLAUDE_CODE_GLOBS=("\$HOME/.claude/projects/*/*.jsonl")
+COWORK_GLOBS=()
+GITHUB_SCOPES=()
+INCLUDE_PROJECTS=("*")
+CLAUDE_BIN="$CLAUDE_BIN"
+GH_BIN="$SRC_ROOT/test/stubs/gh"
+CATALOG_REPO="eval/catalog"
+SITE_VISIBILITY=protected
+SITE_URL=""
+FIRST_RUN_LOOKBACK_HOURS=999999
+EOF
+touch "$HOME/.claude/projects"/*/*.jsonl
+
+echo "— eval ($MODE): frozen sample day through the full pipeline (dry run) —"
+start=$(date +%s)
+"$LW_BASH" "$SRC_ROOT/bin/loopwatch-run.sh" --dry-run 2> "$W/run.log" || fail "pipeline failed"
+secs=$(( $(date +%s) - start ))
+L="$(tail -n 1 "$STATE/runs.jsonl")"
+RUN="$STATE/run"
+GOLD_COST="$(jq -s 'map(.total_cost_usd) | add' "$FIX/recorded/triage.json" "$FIX/recorded/extract.json")"
+GOLD_PAGES="$(jq '.structured_output.pages | length' "$FIX/recorded/extract.json")"
+
+if [[ "$MODE" != "--live" ]]; then
+  cmp -s "$RUN/bundle/transcripts/claude-code-1.txt" "$FIX/recorded/bundle-1.txt" || fail "collector no longer rebuilds bundle-1 byte-for-byte (filter/scrub regression): $(diff "$RUN/bundle/transcripts/claude-code-1.txt" "$FIX/recorded/bundle-1.txt" | head -5)"
+  cmp -s "$RUN/bundle/transcripts/claude-code-2.txt" "$FIX/recorded/bundle-2.txt" || fail "collector no longer rebuilds bundle-2 byte-for-byte"
+  ok "collector rebuilds the recorded bundle byte-for-byte"
+  [[ "$(cat "$REPLAY_OUT/triage-tools.txt")" == "" && "$(cat "$REPLAY_OUT/extract-tools.txt")" == "" ]] || fail "calls must be tool-free"
+  jq -e '.properties.candidates.items.properties.evidence.items.properties.file.enum
+         == ["bundle/transcripts/claude-code-1.txt","bundle/transcripts/claude-code-2.txt"]' "$REPLAY_OUT/triage-schema.json" >/dev/null \
+    || fail "triage schema must pin evidence files"
+  jq -e '.properties.pages.items.required | index("body_html")' "$REPLAY_OUT/extract-schema.json" >/dev/null || fail "writer schema"
+  if grep -q '<file path=' "$REPLAY_OUT/extract-input.txt"; then fail "writer input contains the bundle"; fi
+  ok "both calls tool-free; triage schema pinned to the 2 real paths; writer saw excerpts only"
+  want="$(jq -c '[.structured_output.pages[].slug] | sort' "$FIX/recorded/extract.json")"
+  got="$(jq -c '[.pages[].slug] | sort' "$RUN/run-meta.json")"
+  [[ "$got" == "$want" ]] || fail "pages differ: got $got want $want"
+  for slug in $(jq -r '.pages[].slug' "$RUN/run-meta.json"); do
+    [[ -z "$(bash -c "source '$SRC_ROOT/lib/publish.sh'; html_problem '$RUN/pages/$slug.html'")" ]] || fail "golden page now fails the validator: $slug"
+  done
+  jq -e --argjson c "$GOLD_COST" '.validator_drops == 0 and .postscan_drops == 0 and .pages == 3
+        and .model == "haiku+sonnet" and ((.cost_usd - $c) | fabs) < 0.000001' <<< "$L" >/dev/null || fail "ledger differs from golden: $L"
+  jq -e --slurpfile t "$FIX/recorded/triage.json" '.digest_summary == $t[0].structured_output.digest_summary' "$RUN/run-meta.json" >/dev/null || fail "digest differs"
+  ok "3 golden pages rendered and validator-clean; 0 drops; digest identical; ledger cost \$$GOLD_COST exact"
+  echo "PASS — offline eval"
+else
+  pages="$(jq '.pages' <<< "$L")"; cost="$(jq '.cost_usd' <<< "$L")"
+  printf '  live: %s page(s), $%s, %ss   |   golden: %s page(s), $%s\n' "$pages" "$cost" "$secs" "$GOLD_PAGES" "$GOLD_COST"
+  jq -r '.pages[] | "    - [\(.category)] \(.title)"' "$RUN/run-meta.json"
+  [[ "$pages" -ge 1 ]] || fail "quality collapse: 0 pages on a day that produced $GOLD_PAGES"
+  jq -e --argjson c "$GOLD_COST" '.cost_usd <= 2 * $c' <<< "$L" >/dev/null || fail "cost regression: \$$cost > 2x golden \$$GOLD_COST"
+  jq -e '.validator_drops == 0 and .postscan_drops == 0' <<< "$L" >/dev/null || echo "  WARN: live run had drops: $(jq -c '{validator_drops, postscan_drops}' <<< "$L")"
+  echo "PASS — live eval"
+fi

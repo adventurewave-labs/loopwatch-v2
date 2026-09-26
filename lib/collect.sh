@@ -156,7 +156,7 @@ collect_globs() {
         printf '%s\t%s\n' "$(file_mtime "$f")" "bundle/transcripts/${label}-${n}.txt" >> "$RUN_DIR/bundle-index.tsv"
       fi
       wm_set "$key" "$((old + consumed))"
-    done < <(compgen -G "$pat" || true)
+    done < <(compgen -G "$pat" | LC_ALL=C sort || true)
   done
 }
 
@@ -249,7 +249,7 @@ list_sources() {
         old="$(wm_get "$key")"
         printf '  %-22s %10sB %10sB  %s:%s\n' "$decision" "$size" "$(( size - ${old:-0} ))" \
           "$label" "$(basename "$(dirname "$f")")/$(basename "$f")"
-      done < <(compgen -G "$pat" || true)
+      done < <(compgen -G "$pat" | LC_ALL=C sort || true)
       if [[ "$found" -eq 0 ]]; then echo "  (no matches)"; fi
     done
   done
