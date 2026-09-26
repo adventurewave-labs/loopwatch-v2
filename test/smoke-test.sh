@@ -13,7 +13,7 @@ LW_BASH="${LW_BASH:-$BASH}"
 echo "bash under test: $LW_BASH ($("$LW_BASH" -c 'echo $BASH_VERSION'))"
 
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/loopwatch-test.XXXXXX")"
-trap 'rm -rf "$TMP_ROOT"' EXIT
+[[ -n "${KEEP_TMP:-}" ]] || trap 'rm -rf "$TMP_ROOT"' EXIT
 fail() { echo "FAIL [$CASE]: $*" >&2; [[ -n "${LWLOG:-}" ]] && tail -30 "$LWLOG" >&2; exit 1; }
 ok()   { echo "  ok: $*"; }
 CASE=""
@@ -862,11 +862,11 @@ errs="$(v triage.schema.json "$tri")"
 grep -q "start_line: below 1" <<< "$errs" && grep -q "end_line: expected integer" <<< "$errs" || fail "line bounds/integers: $errs"
 ok "jq JSON-Schema validator: valid page passes; 5 page violations and 2 evidence violations reported"
 # in the pipeline: an oversized highlight list is a top-level triage violation -> fail closed
-export STUB_HIGHLIGHT="$(printf 'h%.0s' $(seq 1 450))"
+export STUB_HIGHLIGHT="$(printf 'h%.0s' $(seq 1 2450))"
 if lw; then fail "triage violating its schema at top level must fail the run"; fi
 unset STUB_HIGHLIGHT
 jq -e '.skipped_reason == "triage_schema_violation"' <(ledger_last) >/dev/null || fail "ledger: $(ledger_last)"
-grep -q 'highlights\[1\]: longer than 400' "$LWLOG" || fail "reason not logged: $(grep FATAL "$LWLOG")"
+grep -q 'highlights: longer than 2400' "$LWLOG" || fail "reason not logged: $(grep FATAL "$LWLOG")"
 ok "top-level triage violation fails closed (triage_schema_violation)"
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -1017,6 +1017,16 @@ printf 'name: x\non: push\npermissions:\n  contents: read\njobs:\n  a:\n    runs
 if bash "$SRC_ROOT/test/ci-policy.sh" "$W/c.yml" >/dev/null; then fail "commented persist-credentials accepted"; fi
 if bash "$SRC_ROOT/test/ci-policy.sh" "$W/none.yml" >/dev/null; then fail "no workflow files must fail"; fi
 ok "zero-padded entities + stray quote blocked; canary immune to redact.list; cost guard fails closed; email rule linear; <pre> grounded; hangup not retried; ci-policy tightened"
+
+# ═════════════════════════════════════════════════════════════════════════
+setup "triage highlights as one newline-separated string (fewer structured-output retries)"
+jq -e '.properties.highlights.type == "string"' "$SRC_ROOT/schemas/triage.schema.json" >/dev/null || fail "schema: highlights must be a string"
+printf '%s' '{"structured_output":{"digest_summary":"d","highlights":"- first item\n2) second item\n\n* third  \n","candidates":[]}}' > "$W/triage.json"
+got="$(bash -c "RUN_DIR='$W'; source '$SRC_ROOT/lib/extract.sh'; parse_triage" | jq -c .highlights)"
+[[ "$got" == '["first item","second item","third"]' ]] || fail "highlights parsing: $got"
+lw --dry-run
+grep -q "ingest architecture decided" "$LW_STATE/run/run-meta.json" || fail "highlights lost in run-meta"
+ok "string highlights split into items (bullets/numbering stripped); run-meta keeps them"
 
 echo
 echo "PASS — $N_CASES cases green"

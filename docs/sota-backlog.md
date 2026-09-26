@@ -88,7 +88,7 @@ Cost: no model tokens | **done** (loop 2, round 4) |
 - **Shipped instead: cache accounting.** Per-stage `cache_write`, `turns` and run-level `cache_hit_ratio` go in the ledger, and `gen_ai.usage.cache_creation.input_tokens` and `loopwatch.turns` go on the OTel spans, so cache efficiency and turn counts are tracked every night.
 - **New finding → #21.** Triage **turns vary from 3 to 6** on the same input ($0.054–0.108). That's the largest remaining cost lever.
 | **done** (loop 2, round 11) |
-| 21 | **Turn-count variance.** Triage took 3–6 turns on identical input, and turns drive cost (5,923 vs 1,907 output tokens). Next steps: capture the intermediate structured-output attempts, check whether the tightened schema's bounds (e.g. `maxItems: 6` on highlights) trigger re-generation, and consider `--max-turns` with a fail-closed budget | Could cut the triage cost floor by about half | todo |
+| 21 | **Turn-count variance.** Triage took 3–6 turns on identical input, and turns drive cost (5,923 vs 1,907 output tokens). Next steps: capture the intermediate structured-output attempts, check whether the tightened schema's bounds (e.g. `maxItems: 6` on highlights) trigger re-generation, and consider `--max-turns` with a fail-closed budget | Could cut the triage cost floor by about half. **Done in loop 3, round 1** (see below) | **done** (loop 3, round 1) |
 
 ## Loop 2: independent review (round 12)
 
@@ -109,3 +109,19 @@ A separate reviewer, who had not seen the work, checked `sota-improvements..sota
   - Retry backoff is capped at 120 s.
   - `ci-policy` ignores commented-out `persist-credentials` and fails when there are no workflow files.
 - **Open, plausible only:** `schema_recheck_triage` drops by candidate id, so two candidates sharing an id could drop the valid one. The scrub-coverage test checks that a secret is gone, not which rule removed it.
+
+## Loop 3 (3 hours, 12 rounds, 2026-09-26 afternoon): prioritized queue
+
+| # | Item | Why it's SOTA / what it buys | Status |
+|---|---|---|---|
+| 21 | **Triage turn-count variance** (carried over) | Largest remaining cost lever. **Root cause, traced with `--output-format stream-json`:** Haiku's `StructuredOutput` tool input failed to parse as JSON because it wrote the `highlights` *array* as markdown bullets or `<item>` tags. Every retry is another full turn. **Fix:** `highlights` becomes one newline-separated string, which loopwatch splits into items (bullets and numbering stripped), and the prompt spells out the exact JSON shape. **Measured on the same input:** before, **3, 3, 6, 4, 4, 2, 3, 3 turns** (mean 3.5; parse errors in 3 of the 4 traced runs); after, **2, 2, 2, 2, 3** (mean 2.2; **0 parse errors** in 4 traced runs); warm-cache triage costs **$0.015–0.019** instead of $0.033–0.059. **Also fixed:** the live eval's cost gate compared a 3-page day's total with a 1-page golden, so it now checks triage cost and writer cost per page separately. The golden was re-recorded under `prompt_version 76f6646071a4`. Round spend: about $0.65 of live calls | **done** (loop 3, round 1) |
+| 22 | **Review leftovers:** the triage recheck drops candidates by id rather than by position; scrub coverage doesn't check which rule removed a secret | Closes the loop-2 review | todo |
+| 23 | **Data retention:** prune old run dirs, logs, autopsies, `private/near-dups` and `private/ungrounded` after `RETENTION_DAYS` | Scrubbed content shouldn't accumulate on disk indefinitely (privacy hygiene) | todo |
+| 24 | **Property-based tests for watermarks:** random append, truncate and rotate sequences check that no line is ever lost or duplicated | Tests the collector's core invariant, not just hand-picked cases | todo |
+| 25 | **Mutation testing of the safety code:** flip conditions in the validator, scrubber and budget code, and measure the share of mutants the suite kills | Measures test strength instead of assuming it | todo |
+| 26 | **Related pages:** BM25 similarity at publish writes a static "Related" list into each page's footer (CSP-safe, no JS) | Better recall three months later, with navigation between pages | todo |
+| 27 | **LLM-as-judge page quality eval** (opt-in, Haiku, rubric-based) alongside the golden | Tracks page quality, not just shape and cost | todo |
+| 28 | **`loopwatch doctor`:** one command reporting the last run, canary, month spend, anomalies, CI policy and prompt drift | Operational health at a glance | todo |
+| 29 | **Structured JSON logs** with `run_id` and level, optionally exported as OTel logs | Machine-readable debugging and correlation with traces | todo |
+| 30 | **Release provenance:** GitHub build attestations and an SBOM in the release workflow, with ci-policy checks | Supply-chain integrity for the tool itself | todo |
+| 31 | **Lock-race test:** two runs started together; exactly one proceeds, and neither corrupts state | Concurrency safety under launchd plus manual runs | todo |

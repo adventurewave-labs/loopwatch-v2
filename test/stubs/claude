@@ -110,7 +110,7 @@ if [[ "$stage" == "triage" ]]; then
       cands='[{"id":"c1","title":"x","category":"ideas","why":"x","evidence":[{"file":"bundle/../../../etc/passwd","start_line":1,"end_line":9},{"file":"/etc/hosts","start_line":1,"end_line":9}]}]' ;;
   esac
   obj="$(jq -nc --arg d "$digest" --arg hl "${STUB_HIGHLIGHT:-}" --argjson c "$cands" \
-    '{digest_summary:$d, highlights:(["ingest architecture decided"] + (if $hl == "" then [] else [$hl] end)), candidates:$c}')"
+    '{digest_summary:$d, highlights:((["ingest architecture decided"] + (if $hl == "" then [] else [$hl] end)) | join("\n")), candidates:$c}')"
   result "${STUB_TRIAGE_COST:-0.03}" false success "$obj"
   exit 0
 fi

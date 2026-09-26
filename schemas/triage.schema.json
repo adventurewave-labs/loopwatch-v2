@@ -13,13 +13,10 @@
       "maxLength": 1500
     },
     "highlights": {
-      "type": "array",
-      "items": {
-        "type": "string",
-        "minLength": 1,
-        "maxLength": 400
-      },
-      "maxItems": 6
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2400,
+      "description": "3-6 short items, one per line (plain text, newline-separated)"
     },
     "candidates": {
       "type": "array",
