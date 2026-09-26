@@ -8,6 +8,9 @@
 #   R4 no `pull_request_target` trigger and no attacker-controlled expressions
 #      (github.event.*, github.head_ref) anywhere: script-injection vectors
 #   R5 every job has `timeout-minutes` (count of runs-on == count of timeout-minutes)
+#   R6 `id-token: write` (OIDC signing) is never granted at the top level, only per job
+#   R7 a workflow that publishes a GitHub release also generates an SBOM and attests build
+#      provenance (actions/attest-build-provenance), so every release is verifiable
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
@@ -32,9 +35,15 @@ for f in "${files[@]}"; do
        END { if (pending && !seen) bad++; exit bad > 0 }' "$f" || v "$f" "R3 checkout without persist-credentials: false"
   grep -qE '^[[:space:]]*pull_request_target:|pull_request_target' "$f" && v "$f" "R4 pull_request_target trigger"
   grep -qE '\$\{\{[^}]*(github\.event\.|github\.head_ref)' "$f" && v "$f" "R4 attacker-controlled expression"
+  awk '/^permissions:/ { top = 1; next } top && /^[^[:space:]#]/ { top = 0 }
+       top && /id-token:[[:space:]]*write/ { found = 1 } END { exit !found }' "$f" && v "$f" "R6 id-token: write granted at the top level"
+  if grep -qE 'gh release (create|upload)|softprops/action-gh-release' "$f"; then
+    grep -qE 'uses:[[:space:]]*actions/attest-build-provenance@' "$f" || v "$f" "R7 release without build-provenance attestation"
+    grep -qiE 'sbom|spdx|cyclonedx' "$f" || v "$f" "R7 release without an SBOM"
+  fi
   jobs="$(grep -cE '^[[:space:]]+runs-on:' "$f")"; to="$(grep -cE '^[[:space:]]+timeout-minutes:' "$f")"
   [[ "$jobs" == "$to" ]] || v "$f" "R5 $jobs job(s) but $to timeout-minutes"
 done
 [[ "$n_files" -gt 0 ]] || { echo "FAIL — ci-policy: no workflow files found"; exit 1; }
 if [[ "$bad" -gt 0 ]]; then echo "FAIL — ci-policy: $bad violation(s)"; exit 1; fi
-echo "PASS — ci-policy (${#files[@]} workflow file(s): pinned SHAs, least privilege, no persisted creds, no injection vectors, timeouts)"
+echo "PASS — ci-policy (${#files[@]} workflow file(s): pinned SHAs, least privilege, no persisted creds, no injection vectors, timeouts, attested releases)"

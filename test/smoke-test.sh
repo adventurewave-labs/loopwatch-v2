@@ -1021,6 +1021,45 @@ grep -qiE "$pat" "$W/raw.html" || fail "catalog CI must reject a raw handler"
 ok "workflows pinned + least-privilege; 6 risky patterns caught; catalog markup scan tells escaped text from a raw handler"
 
 # ═════════════════════════════════════════════════════════════════════════
+setup "release provenance: attested release + valid, reproducible SPDX SBOM (backlog #30)"
+# R6/R7: a release workflow that grants id-token at the top and ships without SBOM/attestation
+cat > "$W/rel.yml" <<'EOF2'
+name: rel
+on: { push: { tags: ["v*"] } }
+permissions:
+  contents: write
+  id-token: write
+jobs:
+  r:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: gh release create "$GITHUB_REF_NAME" --generate-notes
+EOF2
+if bash "$SRC_ROOT/test/ci-policy.sh" "$W/rel.yml" > "$W/rel.txt" 2>&1; then fail "unattested release passed the policy"; fi
+for r in "R6 id-token: write granted at the top level" "R7 release without build-provenance attestation" "R7 release without an SBOM"; do
+  grep -q "$r" "$W/rel.txt" || fail "policy missed: $r ($(cat "$W/rel.txt"))"
+done
+grep -q 'actions/attest-build-provenance@[0-9a-f]\{40\} # v' "$SRC_ROOT/.github/workflows/release.yml" || fail "release must attest with a pinned action"
+# the SBOM: every shipped file with matching hashes, runtime deps, build actions, reproducible
+SOURCE_DATE_EPOCH=1790000000 bash "$SRC_ROOT/bin/loopwatch-sbom.sh" "$SRC_ROOT" > "$W/sbom.json" || fail "sbom generation failed"
+SOURCE_DATE_EPOCH=1790000000 bash "$SRC_ROOT/bin/loopwatch-sbom.sh" "$SRC_ROOT" | cmp -s - "$W/sbom.json" || fail "SBOM must be reproducible under SOURCE_DATE_EPOCH"
+n_git="$(git -C "$SRC_ROOT" ls-files 2>/dev/null | while IFS= read -r f; do [[ -f "$SRC_ROOT/$f" ]] && echo; done | wc -l | tr -d ' ')"
+jq -e --arg v "$(cat "$SRC_ROOT/VERSION")" --argjson n "${n_git:-0}" '
+  .spdxVersion == "SPDX-2.3" and .creationInfo.created == "2026-09-21T14:13:20Z"
+  and (.packages[0] | .name == "loopwatch" and .versionInfo == $v and .licenseDeclared == "MIT"
+       and (.packageVerificationCode.packageVerificationCodeValue | test("^[0-9a-f]{40}$")))
+  and ($n == 0 or (.files | length) == $n)
+  and ([.relationships[] | select(.relationshipType == "DEPENDS_ON")] | length == 5)
+  and ([.relationships[] | select(.relationshipType == "BUILD_TOOL_OF")] | length >= 2)
+  and ([.packages[] | select(.name == "actions/attest-build-provenance")] | length == 1)' "$W/sbom.json" >/dev/null \
+  || fail "SBOM content: $(jq -c '{files: (.files | length), pk: [.packages[].name]}' "$W/sbom.json")"
+f1="$(jq -r '.files[] | select(.fileName == "./lib/redact.sh") | .checksums[] | select(.algorithm == "SHA256") | .checksumValue' "$W/sbom.json")"
+[[ "$f1" == "$( (sha256sum "$SRC_ROOT/lib/redact.sh" 2>/dev/null || shasum -a 256 "$SRC_ROOT/lib/redact.sh") | cut -c1-64)" ]] || fail "SBOM hash for lib/redact.sh is wrong"
+if command -v pyspdxtools >/dev/null 2>&1; then pyspdxtools -i "$W/sbom.json" > "$W/spdx.txt" 2>&1 || fail "SPDX validator: $(head -3 "$W/spdx.txt")"; fi
+ok "top-level id-token, unattested and SBOM-less releases fail the policy; SBOM is SPDX-2.3, reproducible, hashes match, 5 runtime deps + pinned build actions"
+
+# ═════════════════════════════════════════════════════════════════════════
 setup "cost guardrails: monthly cap fails closed, clamps the run budget; anomalies flagged"
 mkdir -p "$LW_STATE"
 M="$(date +%Y-%m)"
