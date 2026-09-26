@@ -157,16 +157,40 @@ USAGE_FILE=/dev/null
 LEDGER_DONE=false
 take_lock() {
   if mkdir "$LOCK" 2>/dev/null; then echo "$$" > "$LOCK/pid"; return 0; fi
-  local pid age
-  pid="$(cat "$LOCK/pid" 2>/dev/null || true)"
-  age=$(( $(now_epoch) - $(file_mtime "$LOCK") ))
-  if { [[ -n "$pid" ]] && ! kill -0 "$pid" 2>/dev/null; } || [[ "$age" -gt $(( LOCK_STALE_HOURS * 3600 )) ]] \
-     || { [[ -z "$pid" ]] && [[ "$age" -gt 60 ]]; }; then
-    log "reclaiming stale lock (pid ${pid:-none}, ${age}s old)"
-    rm -rf "$LOCK"
-    if mkdir "$LOCK" 2>/dev/null; then echo "$$" > "$LOCK/pid"; return 0; fi
+  lock_stale || return 1
+  # Reclaiming is itself a race: several runs can see the same stale lock at once, and a
+  # plain "rm -rf; mkdir" lets a late one delete the lock an early one just re-took (found
+  # by the lock-race test: 4 of 6 racers ran). So only the holder of a second mkdir lock
+  # may reclaim, and it re-checks staleness first. A reclaim lock older than 60s is from a
+  # run that died mid-reclaim and is cleared.
+  local r="$LOCK.reclaim"
+  if ! mkdir "$r" 2>/dev/null; then
+    [[ $(( $(now_epoch) - $(file_mtime "$r" 2>/dev/null || now_epoch) )) -gt 60 ]] && rm -rf "$r"
+    return 1
   fi
+  if lock_stale; then
+    log "reclaiming stale lock (pid ${LOCK_STALE_PID:-none}, ${LOCK_STALE_AGE}s old)"
+    rm -rf "$LOCK"
+    if mkdir "$LOCK" 2>/dev/null; then echo "$$" > "$LOCK/pid"; rmdir "$r" 2>/dev/null || true; return 0; fi
+  fi
+  rmdir "$r" 2>/dev/null || true
   return 1
+}
+# lock_stale: 0 if the lock's holder is gone (dead PID), it is older than LOCK_STALE_HOURS, or
+# it has had no PID for over 60s (a run that died between mkdir and writing its PID)
+lock_stale() {
+  [[ -d "$LOCK" ]] || return 1
+  LOCK_STALE_PID="$(cat "$LOCK/pid" 2>/dev/null || true)"
+  LOCK_STALE_AGE=$(( $(now_epoch) - $(file_mtime "$LOCK" 2>/dev/null || now_epoch) ))
+  { [[ -n "$LOCK_STALE_PID" ]] && ! kill -0 "$LOCK_STALE_PID" 2>/dev/null; } \
+    || [[ "$LOCK_STALE_AGE" -gt $(( LOCK_STALE_HOURS * 3600 )) ]] \
+    || { [[ -z "$LOCK_STALE_PID" ]] && [[ "$LOCK_STALE_AGE" -gt 60 ]]; }
+}
+# release_lock: only the run whose PID is in the lock removes it; a run whose lock was
+# reclaimed after LOCK_STALE_HOURS must not delete the new holder's lock on its way out
+release_lock() {
+  [[ "$(cat "$LOCK/pid" 2>/dev/null || true)" == "$$" ]] || return 0
+  rm -rf "$LOCK" 2>/dev/null || true
 }
 if ! take_lock; then
   log "lock held by a live run ($LOCK) — exiting"
@@ -184,7 +208,7 @@ on_exit() {
     autopsy
     finish failed "${DIE_REASON:-error}" 0
   fi
-  rm -rf "$LOCK" 2>/dev/null || true
+  release_lock
 }
 trap 'on_exit $?' EXIT
 

@@ -39,6 +39,13 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 input="$(cat)"
+# STUB_SLEEP holds the run lock long enough to race it; STUB_HOLD_LOG records each call's
+# [start, end] (ns) so a test can prove no two runs were ever inside the lock at once
+if [[ -n "${STUB_SLEEP:-}" ]]; then
+  [[ -z "${STUB_HOLD_LOG:-}" ]] || echo "$(date +%s%N) +1 $$" >> "$STUB_HOLD_LOG"
+  sleep "$STUB_SLEEP"
+  [[ -z "${STUB_HOLD_LOG:-}" ]] || echo "$(date +%s%N) -1 $$" >> "$STUB_HOLD_LOG"
+fi
 
 stage=extract
 if printf '%s' "$sys" | grep -q 'LOOPWATCH-STAGE: triage'; then stage=triage; fi

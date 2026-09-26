@@ -801,6 +801,45 @@ tail -1 "$W/doctor.txt" | grep -q '^doctor: 2 fail, 4 warn$' || fail "summary: $
 ok "healthy run passes; redact.list mode, 88% of the monthly cap, anomaly, prompt drift warn; a canary leak fails (exit 1)"
 
 # ═════════════════════════════════════════════════════════════════════════
+setup "lock race: 6 runs started together, fresh and over a stale lock; never two inside the lock (backlog #31)"
+race() {  # race <n>: start n runs at once; wait for all
+  local i; : > "$W/race.pids"; : > "$W/holds"
+  for (( i = 0; i < $1; i++ )); do
+    ( STUB_SLEEP=2 STUB_HOLD_LOG="$W/holds" "$LW_BASH" "$SRC_ROOT/bin/loopwatch-run.sh" --dry-run 2> "$W/race-$i.log" ) & echo $! >> "$W/race.pids"
+  done
+  wait
+}
+check_race() {  # check_race <label>: never two runs inside the lock; every run either worked or skipped as locked
+  local rows ran locked peak
+  rows="$(tail -n 6 "$LW_STATE/runs.jsonl")"
+  jq -e . <<< "$rows" >/dev/null || fail "$1: ledger rows corrupted: $rows"
+  ran="$(jq -s '[.[] | select(.status == "dry_run")] | length' <<< "$rows")"
+  locked="$(jq -s '[.[] | select(.skipped_reason == "locked")] | length' <<< "$rows")"
+  # the invariant: at most one run holds the lock at any instant (a late starter may run
+  # legitimately after the first finished, so "exactly one ran" would be timing-dependent)
+  peak="$(sort -n "$W/holds" | awk '{ c += $2; if (c > m) m = c } END { print m + 0 }')"
+  [[ "$peak" == 1 ]] || fail "$1: peak $peak runs inside the lock (want exactly 1): $(jq -c '{status, skipped_reason}' <<< "$rows" | tr '\n' ' ')"
+  [[ "$ran" -ge 1 && $(( ran + locked )) == 6 ]] || fail "$1: want 6 = runs + locked skips, got $ran + $locked: $(jq -c '{status, skipped_reason}' <<< "$rows" | tr '\n' ' ')"
+  RACE_RAN="$RACE_RAN$ran "
+  jq -e . "$LW_STATE/watermarks.json" >/dev/null || fail "$1: watermarks corrupted"
+  [[ ! -e "$LW_STATE/.lock" ]] || fail "$1: lock left behind"
+}
+RACE_RAN=""
+race 6; check_race "fresh start"
+# a stale lock (dead pid): every racer sees it stale at once, and only one may reclaim it
+mkdir -p "$LW_STATE/.lock"; echo 999999 > "$LW_STATE/.lock/pid"
+race 6; check_race "stale lock"
+[[ "$(cat "$W"/race-*.log | grep -c 'reclaiming stale lock')" == 1 ]] || fail "stale lock reclaimed $(cat "$W"/race-*.log | grep -c 'reclaiming stale lock') times"
+# a run must never release a lock it no longer owns (reclaimed by another run meanwhile)
+( STUB_SLEEP=3 STUB_HOLD_LOG="$W/holds" "$LW_BASH" "$SRC_ROOT/bin/loopwatch-run.sh" --dry-run 2> "$W/own.log" ) &
+for _ in 1 2 3 4 5 6 7 8 9 10; do [[ -f "$LW_STATE/.lock/pid" ]] && break; sleep 0.3; done
+echo $$ > "$LW_STATE/.lock/pid"      # someone else holds it now
+wait
+[[ "$(cat "$LW_STATE/.lock/pid" 2>/dev/null)" == "$$" ]] || fail "a finishing run removed a lock it did not own"
+ok "6 concurrent runs, fresh and over a dead-PID lock (reclaimed once): never 2 inside the lock (runs that worked: ${RACE_RAN% }, rest skipped as locked); ledger and watermarks valid; a run only releases its own lock"
+rm -rf "$LW_STATE/.lock"
+
+# ═════════════════════════════════════════════════════════════════════════
 setup "near-duplicate guard: same topic under a new slug is dropped, new topic kept"
 lw
 jq -e '.entries | length == 1' "$SITE/manifest.json" >/dev/null || fail "first publish"
