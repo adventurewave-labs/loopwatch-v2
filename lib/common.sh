@@ -141,6 +141,8 @@ run_claude() {
        models_used: ((.modelUsage // {}) | keys),
        in: (((.usage.input_tokens // 0) + (.usage.cache_creation_input_tokens // 0))),
        cached: (.usage.cache_read_input_tokens // 0),
+       cache_write: (.usage.cache_creation_input_tokens // 0),
+       turns: (.num_turns // 0),
        out: (.usage.output_tokens // 0),
        cost_usd: (.total_cost_usd // 0),
        duration_ms: (.duration_ms // 0),
@@ -148,7 +150,7 @@ run_claude() {
        subtype: (.subtype // "")}' "$out" 2>/dev/null || true)"
   if [[ -z "$rec" ]]; then
     rec="$(jq -nc --arg stage "$stage" --arg model "$model" --argjson rc "$rc" --argjson t0 "$t0" --argjson attempt "$attempt" --argjson fb "$is_fb" \
-      '{stage: $stage, model: $model, rc: $rc, start_s: $t0, attempt: $attempt, fallback_attempt: $fb, models_used: [], in: 0, cached: 0, out: 0, cost_usd: 0,
+      '{stage: $stage, model: $model, rc: $rc, start_s: $t0, attempt: $attempt, fallback_attempt: $fb, models_used: [], in: 0, cached: 0, cache_write: 0, turns: 0, out: 0, cost_usd: 0,
         duration_ms: 0, is_error: ($rc != 0), subtype: "unparsed_output"}')"
   fi
   printf '%s\n' "$rec" >> "$USAGE_FILE"
@@ -281,6 +283,9 @@ ledger_append() {
       model: ((map(.model) | unique | join("+")) | if . == "" then null else . end),
       in:      (map(.in)       | add // 0),
       cached:  (map(.cached)   | add // 0),
+      cache_write: (map(.cache_write // 0) | add // 0),
+      cache_hit_ratio: ((map(.cached) | add // 0) as $r | (map(.in) | add // 0) as $i
+                        | if ($r + $i) == 0 then null else (($r / ($r + $i)) * 1000 | round / 1000) end),
       out:     (map(.out)      | add // 0),
       cost_usd:((map(.cost_usd) | add // 0) * 1000000 | round / 1000000),
       duration_ms: $wall,
@@ -296,7 +301,7 @@ ledger_append() {
                          | ($r.fallback_attempt // false)
                            or (($r.models_used // []) | length > 0
                                and (map(ascii_downcase | contains($r.model | ascii_downcase)) | any | not))),
-      stages: map({stage, model, attempt, cost_usd, in, cached, out, subtype, models_used})
+      stages: map({stage, model, attempt, turns, cost_usd, in, cached, cache_write, out, subtype, models_used})
     }' "$usage")" || return 1
   printf '%s\n' "$row" >> "$LEDGER"
   # optional OpenTelemetry GenAI export (lib/otel.sh); never fails the run

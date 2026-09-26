@@ -958,5 +958,18 @@ setup "scrubber coverage: gitleaks-style samples for 53 secret kinds, 0 false po
 bash "$SRC_ROOT/test/scrub/run-coverage.sh" > "$W/cov.txt" 2>&1 || fail "$(cat "$W/cov.txt")"
 ok "$(grep 'scrubber coverage' "$W/cov.txt" | sed 's/^ *//')"
 
+# ═════════════════════════════════════════════════════════════════════════
+setup "prompt-cache accounting: cache writes, reads, hit ratio and turns per stage"
+conf "OTEL_EXPORT_DIR=\"$W/otel\""
+lw --dry-run
+L="$(ledger_last)"
+# stub usage per call: input 1200 + cache_creation 300 (-> in 1500), cache_read 5000, 2 turns
+jq -e '.cache_write == 600 and .cached == 10000 and .in == 3000 and .cache_hit_ratio == 0.769
+       and (.stages | all(.cache_write == 300 and .turns == 2))' <<< "$L" >/dev/null \
+  || fail "ledger cache accounting: $(jq -c '{in, cached, cache_write, cache_hit_ratio, stages: [.stages[] | {cache_write, turns}]}' <<< "$L")"
+jq -e '[.resourceSpans[0].scopeSpans[0].spans[1:][] | .attributes[] | select(.key == "gen_ai.usage.cache_creation.input_tokens") | .value.intValue] == ["300","300"]' "$W"/otel/*.otlp.json >/dev/null \
+  || fail "spans lack gen_ai.usage.cache_creation.input_tokens"
+ok "ledger: cache_write 600, cached 10000, hit ratio 0.769, 2 turns/stage; spans carry cache_creation tokens"
+
 echo
 echo "PASS — $N_CASES cases green"

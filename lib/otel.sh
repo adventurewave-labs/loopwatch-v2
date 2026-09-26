@@ -78,6 +78,8 @@ otel_payload() {  # otel_payload <ledger-row-json> <usage-file>  -> OTLP/JSON on
                      "gen_ai.usage.input_tokens": (($s.in // 0) + ($s.cached // 0)),
                      "gen_ai.usage.output_tokens": ($s.out // 0),
                      "gen_ai.usage.cache_read.input_tokens": ($s.cached // 0),
+                     "gen_ai.usage.cache_creation.input_tokens": ($s.cache_write // 0),
+                     "loopwatch.turns": ($s.turns // 0),
                      "error.type": (if $s.is_error then ($s.subtype // "error") else null end),
                      "loopwatch.stage": $s.stage,
                      "loopwatch.prompt_version": $row.prompt_version,

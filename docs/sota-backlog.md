@@ -81,4 +81,11 @@ Cost: no model tokens | **done** (loop 2, round 4) |
 - **Coverage before:** **30/53**. The misses were ASIA keys, Slack app tokens and webhooks, PGP keys, SendGrid, DigitalOcean, Azure, Shopify, Telegram, Grafana, Docker, Supabase, Doppler, and every bare-in-prose token.
 - **Coverage after:** 25 provider rules added, giving **53/53 with 0 false positives**. The eval golden, canary and fuzz are unchanged. It runs in CI and smoke.
 | **done** (loop 2, round 10) |
-| 20 | **Prompt-caching measurement** (was #8, live and cheap) | Only if the numbers justify it | todo |
+| 20 | **Prompt-caching measurement** (was #8, live and cheap) | Only if the numbers justify it. **Measured** (2 identical live triage calls back to back, about $0.14):
+- **Cold vs warm.** The cold call wrote 29,703 cache tokens and cost **$0.108**. The warm call, within the cache TTL, wrote 2,260 and cost **$0.033 (−69%)**.
+- **Already in effect within a call.** Prompt caching already works inside each call: across turns the golden run's cache hit ratio is 0.68 for triage and 0.78 for the writer. `--exclude-dynamic-system-prompt-sections` doesn't apply, because we pass our own `--system-prompt`.
+- **Decision: no cross-night caching.** Consecutive nights are 24 hours apart, far past the cache TTL, and the two stages share no prefix. The saving that is real is **retries**: round 1's retry backoff of 15–60s falls inside the TTL, so a retry re-reads a warm cache at about a third of the cost.
+- **Shipped instead: cache accounting.** Per-stage `cache_write`, `turns` and run-level `cache_hit_ratio` go in the ledger, and `gen_ai.usage.cache_creation.input_tokens` and `loopwatch.turns` go on the OTel spans, so cache efficiency and turn counts are tracked every night.
+- **New finding → #21.** Triage **turns vary from 3 to 6** on the same input ($0.054–0.108). That's the largest remaining cost lever.
+| **done** (loop 2, round 11) |
+| 21 | **Turn-count variance.** Triage took 3–6 turns on identical input, and turns drive cost (5,923 vs 1,907 output tokens). Next steps: capture the intermediate structured-output attempts, check whether the tightened schema's bounds (e.g. `maxItems: 6` on highlights) trigger re-generation, and consider `--max-turns` with a fail-closed budget | Could cut the triage cost floor by about half | todo |
