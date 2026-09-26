@@ -6,18 +6,7 @@
 #
 # Watermark state is keyed by hash_key(<absolute path>) — never the path itself (bug 7).
 
-# Best-effort credential scrub before anything reaches the model or the repo.
-scrub() {
-  sed -E \
-    -e 's/sk-[A-Za-z0-9_-]{16,}/[REDACTED:key]/g' \
-    -e 's/(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}/[REDACTED:github]/g' \
-    -e 's/github_pat_[A-Za-z0-9_]{20,}/[REDACTED:github]/g' \
-    -e 's/AKIA[0-9A-Z]{16}/[REDACTED:aws]/g' \
-    -e 's/xox[baprs]-[A-Za-z0-9-]{10,}/[REDACTED:slack]/g' \
-    -e 's/eyJ[A-Za-z0-9_-]{15,}\.[A-Za-z0-9_-]{15,}\.[A-Za-z0-9_-]{10,}/[REDACTED:jwt]/g' \
-    -e 's/-----BEGIN [A-Z ]*PRIVATE KEY-----/[REDACTED:pem]/g'
-}
-scrub_all() { scrub; }
+# Scrubbing (secrets + redact.list) lives in lib/redact.sh: scrub_all.
 
 # JSONL transcript -> readable "[role] text" lines; drops tool-call noise.
 # Claude Code 2.1.x schema (docs/revival-notes.md): drops isMeta (harness-injected)
@@ -52,6 +41,30 @@ is_self_project() {
   return 1
 }
 
+# Allowlist (R-7). A pattern containing ':' matches "<label>:<project-dir>"
+# (e.g. "cowork:*"), otherwise it matches the project dir name alone
+# (e.g. "*-src-turbo-flow"). Empty INCLUDE_PROJECTS = collect nothing.
+# EXCLUDE_PROJECTS always wins.
+# shellcheck disable=SC2053  # unquoted RHS is intentional: glob matching
+project_allowed() {
+  local label="$1" dir="$2" p key hit=1
+  key="$label:$dir"
+  for p in ${INCLUDE_PROJECTS[@]+"${INCLUDE_PROJECTS[@]}"}; do
+    case "$p" in
+      *:*) if [[ "$key" == $p ]]; then hit=0; break; fi ;;
+      *)   if [[ "$dir" == $p ]]; then hit=0; break; fi ;;
+    esac
+  done
+  [[ "$hit" -eq 0 ]] || return 1
+  for p in ${EXCLUDE_PROJECTS[@]+"${EXCLUDE_PROJECTS[@]}"}; do
+    case "$p" in
+      *:*) if [[ "$key" == $p ]]; then return 1; fi ;;
+      *)   if [[ "$dir" == $p ]]; then return 1; fi ;;
+    esac
+  done
+  return 0
+}
+
 wm_get() { jq -r --arg k "$1" '.files[$k] // empty' "$WATERMARKS"; }
 wm_set() {
   jq --arg k "$1" --argjson v "$2" '.files[$k] = $v' \
@@ -64,6 +77,7 @@ decide_source() {
   local dir
   dir="$(basename "$(dirname "$2")")"
   if is_self_project "$dir"; then echo "skip:self"; return; fi
+  if ! project_allowed "$1" "$dir"; then echo "skip:not-allowlisted"; return; fi
   echo "ok"
 }
 

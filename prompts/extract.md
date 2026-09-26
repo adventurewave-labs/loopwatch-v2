@@ -31,9 +31,15 @@ Does not qualify:
 - Anything already covered by `recent_slugs`
 - Padding. **Zero pages is a normal, correct outcome.** Typical yield is 0–3 pages per day. Never invent significance.
 
-## Hard rule — secrets
+## Hard rules — privacy and page safety
 
-Inputs are pre-scrubbed, but treat anything credential-shaped (tokens, keys, connection strings, internal hostnames) as radioactive: never reproduce it — write `[REDACTED]`. These pages are published to the public web.
+Inputs are pre-scrubbed: secrets and client/entity names are replaced with `[REDACTED:<kind>]` markers. Keep those markers exactly as they are and never try to reconstruct, guess or hint at what was redacted. Treat anything else that looks credential-shaped (tokens, keys, connection strings, internal hostnames, email addresses) as radioactive: write `[REDACTED]` instead.
+
+The catalog is private (behind Vercel Deployment Protection), but write every page as if it could be shared. A validating publisher re-scans your output and **drops any page** that:
+
+- contains `<script>`, any `on…=` event handler, `<iframe>`, `<object>`, `<embed>`, `<form>`, `<link>` or `<base>`
+- has an `src`/`href`/`url(…)` pointing to `http:`, `https:`, `//` or `javascript:`. **Write URLs as plain text in `<code>`, not as links.**
+- matches a secret pattern or a redaction-list term anywhere, in the HTML, title, summary, tags or slug
 
 ## Output contract (write exactly this, nothing else)
 
@@ -65,7 +71,7 @@ Inputs are pre-scrubbed, but treat anything credential-shaped (tokens, keys, con
 
 ## Page HTML spec
 
-Each page is a fully self-contained single file: inline CSS, no JavaScript, no external requests of any kind. Use exactly this skeleton:
+Each page is a fully self-contained single file: inline CSS, no JavaScript, no external requests of any kind, no outbound links. Use exactly this skeleton:
 
 ```html
 <!doctype html>

@@ -2,7 +2,7 @@
 
 Unattended nightly loop: mines your Claude Code sessions, Cowork sessions, and git activity for anything of durable reference value, publishes self-contained HTML pages + a daily digest into your HTML repo, and lets your existing push→Vercel pipeline do the rest.
 
-> ⚠️ **Risk flag:** transcript content ends up on the public web. The collector scrubs common credential patterns (GitHub/AWS/Slack/OpenAI tokens, JWTs, PEM headers) and the extraction prompt enforces redaction, but this is best-effort — enable Vercel Deployment Protection or keep the project private if your sessions touch client secrets.
+> **Privacy is enforced, not advised (v0.2):** transcripts are collected only from allowlisted projects (`INCLUDE_PROJECTS`, empty = nothing). Secrets and every term in your local `redact.list` are scrubbed before the model sees anything, and generated pages are re-scanned afterwards, with any hit dropping the page. A publishing run refuses to start unless `SITE_VISIBILITY=protected` (Vercel Deployment Protection), and `loopwatch-run.sh --preflight` shows each check.
 
 ```
 ~/.claude/projects/**/*.jsonl ┐

@@ -8,6 +8,7 @@
 #   STUB_TRIAGE       one (default) | none                          — what the triage stage returns
 #   STUB_FAIL         budget | crash                                 — simulate a failed call
 #   STUB_MARKER       text planted in the persisted session transcript (self-ingestion test)
+#   STUB_DIGEST / STUB_HIGHLIGHT   override the digest summary / add a highlight
 set -u
 
 if [[ "${1:-}" == "--help" ]]; then
@@ -116,11 +117,14 @@ case "${STUB_PAGES:-one}" in
     page client-page "Rollout notes" "<p>Deployed for Globex Corporation last night.</p>"
     entries="$(meta_entry clean-page "Clean page"),$(meta_entry client-page "Rollout notes")" ;;
 esac
+digest="${STUB_DIGEST:-Settled the Turbo-Flow ingest architecture: K8s CronJob feeding a work queue, idempotent worker.}"
+extra_hl=""
+if [[ -n "${STUB_HIGHLIGHT:-}" ]]; then extra_hl=", \"$STUB_HIGHLIGHT\""; fi
 cat > run-meta.json <<JSON
 {
   "run_date": "TEST",
-  "digest_summary": "Settled the Turbo-Flow ingest architecture: K8s CronJob feeding a work queue, idempotent worker.",
-  "highlights": ["ingest architecture decided", "one commit in srcrepo"],
+  "digest_summary": "$digest",
+  "highlights": ["ingest architecture decided", "one commit in srcrepo"$extra_hl],
   "pages": [${entries}]
 }
 JSON

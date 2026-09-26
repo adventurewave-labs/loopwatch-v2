@@ -26,7 +26,7 @@ setup() {
   LW_STATE="$H/.local/state/loopwatch"
   CALLS="$W/claude-calls.log"; : > "$CALLS"
   export STUB_CALLS="$CALLS"
-  unset STUB_PAGES STUB_TRIAGE STUB_FAIL STUB_HELP_FLAGS STUB_MARKER 2>/dev/null || true
+  unset STUB_PAGES STUB_TRIAGE STUB_FAIL STUB_HELP_FLAGS STUB_MARKER STUB_DIGEST STUB_HIGHLIGHT 2>/dev/null || true
   LWLOG=""
 
   REPO="$W/catalog"
@@ -52,7 +52,11 @@ SITE_DIR="$SITE"
 ACTIVITY_MIN_BYTES=200
 PULL=false
 PUSH=false
+INCLUDE_PROJECTS=("*")
+SITE_VISIBILITY=protected
 EOF
+  : > "$H/.config/loopwatch/redact.list"
+  chmod 600 "$H/.config/loopwatch/redact.list"
 }
 conf() { echo "$*" >> "$H/.config/loopwatch/loopwatch.conf"; }
 lw() { LWLOG="$W/last-run.log"; "$SRC_ROOT/bin/loopwatch-run.sh" "$@" 2> "$LWLOG"; }
@@ -201,6 +205,78 @@ jq -e '.files | length == 0' "$LW_STATE/watermarks.json" >/dev/null || fail "wat
 ls "$LW_STATE/failed/" | grep -q . || fail "no autopsy"
 ok "budget_exceeded logged with cost, watermarks unchanged, autopsy kept"
 unset STUB_FAIL
+
+# ═════════════════════════════════════════════════════════════════════════
+setup "allowlist: empty INCLUDE_PROJECTS collects nothing (R-7)"
+conf 'INCLUDE_PROJECTS=()'
+lw
+[[ "$(calls)" == "0" ]] || fail "empty allowlist must not reach the model"
+lw --list-sources > "$W/src.txt"
+grep -q "skip:not-allowlisted" "$W/src.txt" || fail "--list-sources should show not-allowlisted"
+ok "empty allowlist: 0 calls, list-sources explains why"
+conf 'INCLUDE_PROJECTS=("*-src-other")'
+lw --list-sources > "$W/src.txt"
+grep -q "skip:not-allowlisted.*turbo-flow" "$W/src.txt" || fail "non-matching pattern should not include turbo-flow"
+conf 'INCLUDE_PROJECTS=("claude-code:*-src-turbo-*")'
+lw --list-sources > "$W/src.txt"
+grep -q "include.*turbo-flow" "$W/src.txt" || fail "label-prefixed pattern should include turbo-flow: $(cat "$W/src.txt")"
+conf 'EXCLUDE_PROJECTS=("*turbo-flow")'
+lw --list-sources > "$W/src.txt"
+grep -q "skip:not-allowlisted.*turbo-flow" "$W/src.txt" || fail "EXCLUDE_PROJECTS must win"
+ok "dir patterns, label:dir patterns, exclude wins"
+
+# ═════════════════════════════════════════════════════════════════════════
+setup "privacy: client name, Stripe key, connection string, inline script (R-6, R-11)"
+printf '%s\n' 'Globex( Corporation)?' 'Initech=>ACME-2' > "$H/.config/loopwatch/redact.list"
+printf '%s\n' "$(jq -nc '{type:"user",cwd:"/Users/dev/src/turbo-flow",message:{role:"user",content:"Shipped the rollout for Globex Corporation and initech today. Stripe key sk_live_ABCDEFGHIJKLMNOPQRSTUVWX, db postgres://admin:hunter2pass@db.internal:5432/app, google AIzaSyA1234567890abcdefghijklmnopqrstuv, VERCEL_TOKEN=abc123def456ghi789"}}')" >> "$TX"
+export STUB_PAGES=unsafe
+lw
+for leak in "Globex" "initech" "sk_live_ABCDEFGH" "hunter2pass" "AIzaSyA1234567890" "abc123def456ghi789"; do
+  if grep -rqi -- "$leak" "$LW_STATE/run/bundle" "$SITE" "$LW_STATE/runs.jsonl"; then fail "leaked into bundle/site/ledger: $leak"; fi
+done
+grep -rq "ACME-2" "$LW_STATE/run/bundle" || fail "custom replacement not applied"
+ok "client names + 4 secret kinds redacted before the model; nothing in site/ or ledger"
+test -f "$SITE/pages/$YEAR/safe-page-one.html" || fail "safe page should publish"
+for bad in inline-script-page onload-handler-page external-img-page iframe-page leaked-stripe-page; do
+  if [[ -f "$SITE/pages/$YEAR/$bad.html" ]]; then fail "unsafe page published: $bad"; fi
+  if jq -e --arg s "$bad" '.entries | any(.slug == $s)' "$SITE/manifest.json" >/dev/null; then fail "unsafe page in manifest: $bad"; fi
+done
+if grep -rqiE "<script|onerror=" "$SITE/pages" "$SITE/digests"; then fail "script content reached site/"; fi
+jq -e '.validator_drops == 4 and .postscan_drops == 1 and .pages == 1' <(ledger_last) >/dev/null || fail "drop counts wrong: $(ledger_last)"
+ok "validator dropped script/on*/external-src/iframe pages; postscan dropped the Stripe page; counts in ledger"
+
+# ═════════════════════════════════════════════════════════════════════════
+setup "privacy: model re-introduces a client name -> page dropped, digest withheld"
+printf '%s\n' 'Globex( Corporation)?' > "$H/.config/loopwatch/redact.list"
+export STUB_PAGES=client
+export STUB_DIGEST="Big day for Globex: rollout finished."
+export STUB_HIGHLIGHT="globex cutover done"
+lw
+if grep -rqi "globex" "$SITE" "$LW_STATE/runs.jsonl"; then fail "client name reached site/ or ledger"; fi
+test -f "$SITE/pages/$YEAR/clean-page.html" || fail "clean page should survive"
+jq -e '.digests[0].summary | test("withheld")' "$SITE/manifest.json" >/dev/null || fail "digest summary should be withheld"
+jq -e '.postscan_drops == 3' <(ledger_last) >/dev/null || fail "postscan drops (page+summary+highlight) wrong: $(ledger_last)"
+ok "post-extraction scan fails closed on page, digest summary and highlight"
+
+# ═════════════════════════════════════════════════════════════════════════
+setup "preflight fails closed (R-5)"
+conf 'SITE_VISIBILITY=public'
+if lw; then fail "publishing run must fail when the site is not protected"; fi
+[[ "$(calls)" == "0" ]] || fail "failed preflight must not reach the model"
+jq -e '.status == "failed" and .skipped_reason == "preflight_failed"' <(ledger_last) >/dev/null || fail "preflight failure not in ledger"
+if "$SRC_ROOT/bin/loopwatch-run.sh" --preflight > "$W/pf.txt" 2>&1; then fail "--preflight should exit non-zero"; fi
+grep -q "^FAIL.*SITE_VISIBILITY" "$W/pf.txt" || fail "--preflight should name the failing check"
+ok "unprotected site: run refused before collection, --preflight exits non-zero"
+conf 'ALLOW_PUBLIC=true'
+"$SRC_ROOT/bin/loopwatch-run.sh" --preflight > "$W/pf.txt" 2>&1 || fail "ALLOW_PUBLIC=true should pass preflight"
+grep -q "^WARN.*ALLOW_PUBLIC" "$W/pf.txt" || fail "ALLOW_PUBLIC should warn"
+conf 'ALLOW_PUBLIC=false'; conf 'SITE_VISIBILITY=protected'
+printf '%s\n' 'bad(regex' > "$H/.config/loopwatch/redact.list"
+if "$SRC_ROOT/bin/loopwatch-run.sh" --preflight > "$W/pf.txt" 2>&1; then fail "invalid redact.list regex should fail preflight"; fi
+grep -q "^FAIL.*redact.list" "$W/pf.txt" || fail "bad regex not reported"
+rm -f "$H/.config/loopwatch/redact.list"
+if "$SRC_ROOT/bin/loopwatch-run.sh" --preflight > "$W/pf.txt" 2>&1; then fail "missing redact.list should fail preflight"; fi
+ok "ALLOW_PUBLIC override warns; bad or missing redact.list fails"
 
 echo
 echo "PASS — $N_CASES cases green"

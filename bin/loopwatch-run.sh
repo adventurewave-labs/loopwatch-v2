@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # loopwatch — activity deltas -> headless claude extraction -> static catalog
-# usage: loopwatch-run.sh [--dry-run] [--list-sources] [--target nightly|manual]
+# usage: loopwatch-run.sh [--dry-run] [--list-sources] [--preflight] [--target nightly|manual]
 set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -30,14 +30,19 @@ source "$CONF"
 : "${PUSH:=true}"
 : "${SKIP_EMPTY:=true}"
 : "${SITE_DIR:=}"
+: "${REDACT_LIST:=$CONFIG_HOME/redact.list}"
+: "${SITE_VISIBILITY:=}"
+: "${ALLOW_PUBLIC:=false}"
 
 DRY_RUN=false
 LIST_ONLY=false
+PREFLIGHT_ONLY=false
 RUN_TARGET="${LOOPWATCH_TARGET:-manual}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run)      DRY_RUN=true ;;
     --list-sources) LIST_ONLY=true ;;
+    --preflight)    PREFLIGHT_ONLY=true ;;
     --target)       shift; RUN_TARGET="${1:-manual}" ;;
     -h|--help)      sed -n '2,3s/^# //p' "$0"; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
@@ -80,6 +85,15 @@ WATERMARKS="$STATE_DIR/watermarks.json"
 source "$ROOT_DIR/lib/collect.sh"
 # shellcheck disable=SC1091
 source "$ROOT_DIR/lib/publish.sh"
+# shellcheck disable=SC1091
+source "$ROOT_DIR/lib/redact.sh"
+# shellcheck disable=SC1091
+source "$ROOT_DIR/lib/preflight.sh"
+
+if [[ "$PREFLIGHT_ONLY" == "true" ]]; then
+  preflight
+  exit $?
+fi
 
 if [[ "$LIST_ONLY" == "true" ]]; then
   list_sources
@@ -100,6 +114,7 @@ mkdir -p "$RUN_DIR/bundle/transcripts" "$RUN_DIR/bundle/git" "$RUN_DIR/pages"
 BUNDLE_BYTES=0
 TRIMMED_BYTES=0
 POSTSCAN_DROPS=0
+VALIDATOR_DROPS=0
 LEDGER_DONE=false
 
 autopsy() {
@@ -118,6 +133,20 @@ finish() {  # finish <status> <skipped_reason> <pages>
 }
 die() { log "FATAL: $*"; autopsy; finish failed "${DIE_REASON:-error}" 0; exit 1; }
 trap 'log "unexpected error (line $LINENO)"; autopsy; finish failed error 0' ERR
+
+# privacy preflight (R-5): a publishing run never starts if it fails
+if ! preflight > "$RUN_DIR/preflight.txt" 2>&1; then
+  if [[ "$DRY_RUN" == "true" ]]; then
+    log "preflight FAILED — continuing because this is a dry run (nothing is published):"
+    grep '^FAIL' "$RUN_DIR/preflight.txt" | while IFS= read -r l; do log "  $l"; done
+  else
+    grep '^FAIL' "$RUN_DIR/preflight.txt" | while IFS= read -r l; do log "  $l"; done
+    log "preflight failed — nothing collected, nothing published"
+    finish failed preflight_failed 0
+    exit 1
+  fi
+fi
+build_rules
 
 log "collecting deltas -> $RUN_DIR"
 collect_all
@@ -143,6 +172,7 @@ fi
 META="$RUN_DIR/run-meta.json"
 [[ -f "$META" ]] || { DIE_REASON=no_meta; die "extractor produced no run-meta.json"; }
 validate_meta "$META"
+postscan "$META"
 N_PAGES="$(jq '.pages | length' "$META")"
 log "extraction ok — $N_PAGES candidate page(s), cost \$$(jq -s 'map(.cost_usd) | add // 0' "$RUN_DIR/usage.jsonl")"
 

@@ -8,23 +8,50 @@ validate_meta() {
          and (.digest_summary | type == "string")' "$meta" >/dev/null \
     || die "run-meta.json: bad top-level shape"
 
+  # per-page firewall: any page that fails is dropped (fail closed), the run continues
+  local slug file reason tmp
+  tmp="$RUN_DIR/.validate.tmp"
+  : > "$RUN_DIR/.invalid.txt"
+  while IFS= read -r row; do
+    slug="$(jq -r '.slug // ""' <<< "$row")"
+    file="$(jq -r '.file // ""' <<< "$row")"
+    reason="$(page_problem "$row")"
+    if [[ -n "$reason" ]]; then
+      log "validator: dropped page ${slug:-<no slug>}: $reason"
+      printf '%s\n' "$slug" >> "$RUN_DIR/.invalid.txt"
+      if [[ "$file" =~ ^pages/[a-z0-9-]+\.html$ ]]; then rm -f "$RUN_DIR/$file"; fi
+      VALIDATOR_DROPS=$(( ${VALIDATOR_DROPS:-0} + 1 ))
+    fi
+  done < <(jq -c '.pages[]' "$meta")
+  jq --rawfile bad "$RUN_DIR/.invalid.txt" '
+    ($bad | split("\n") | map(select(. != ""))) as $b
+    | .pages = ([.pages[] | select((.slug // "") as $s | $b | index($s) | not)]
+                | unique_by(.slug))' "$meta" > "$tmp" && mv "$tmp" "$meta"
+}
+
+# page_problem <page-json>: prints why a page must be dropped, or nothing
+page_problem() {
+  local row="$1" file flat
   jq -e '
-    .pages | all(
       (.slug     | type == "string" and test("^[a-z0-9][a-z0-9-]{2,79}$")) and
-      (.title    | type == "string" and length > 0) and
+      (.title    | type == "string" and length > 0 and length < 200) and
       (.category | type == "string" and test("^[a-z0-9-]+(/[a-z0-9-]+)?$")) and
       (.summary  | type == "string" and length > 0) and
-      (.file     | type == "string" and startswith("pages/"))
-    )' "$meta" >/dev/null || die "run-meta.json: a page entry failed the schema"
-
-  local f
-  while IFS= read -r f; do
-    [[ -f "$RUN_DIR/$f" ]] || die "meta references missing file: $f"
-    head -c 512 "$RUN_DIR/$f" | grep -qi '<!doctype html\|<html' || die "not an html doc: $f"
-    if grep -qiE 'src="https?://|href="https?://[^"]*\.(css|js)' "$RUN_DIR/$f"; then
-      die "external resource in $f — pages must be fully self-contained"
-    fi
-  done < <(jq -r '.pages[].file' "$meta")
+      (.file     | type == "string" and test("^pages/[a-z0-9][a-z0-9-]{2,79}\\.html$"))' <<< "$row" >/dev/null \
+    || { echo "schema"; return; }
+  file="$RUN_DIR/$(jq -r '.file' <<< "$row")"
+  [[ -f "$file" ]] || { echo "missing file"; return; }
+  head -c 512 "$file" | grep -qi '<!doctype html\|<html' || { echo "not an html doc"; return; }
+  # flatten newlines so multi-line tags are checked as one unit
+  flat="$(tr '\n\r' '  ' < "$file")"
+  if printf '%s' "$flat" | grep -qiE '<script'; then echo "inline or external <script>"; return; fi
+  if printf '%s' "$flat" | grep -qiE '<[^>]*[[:space:]/]on[a-z]+[[:space:]]*='; then echo "on* event handler"; return; fi
+  if printf '%s' "$flat" | grep -qiE '<(iframe|object|embed|frame|frameset|applet|base|form|link|portal)[[:space:]>/]'; then echo "embedding/linking element"; return; fi
+  if printf '%s' "$flat" | grep -qiE '<meta[^>]*http-equiv'; then echo "meta http-equiv"; return; fi
+  if printf '%s' "$flat" | grep -qiE '<[^>]*[[:space:]](src|href|srcset|action|formaction|poster|data|background|xlink:href)[[:space:]]*=[[:space:]]*["'"'"']?[[:space:]]*(https?:|//|javascript:|vbscript:|data:text)'; then
+    echo "external or scriptable URL in an attribute"; return
+  fi
+  if printf '%s' "$flat" | grep -qiE 'url\([[:space:]]*["'"'"']?[[:space:]]*(https?:|//)|@import'; then echo "external CSS resource"; return; fi
 }
 
 write_digest() {

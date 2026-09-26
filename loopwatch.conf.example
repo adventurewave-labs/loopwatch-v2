@@ -31,3 +31,26 @@ SKIP_EMPTY=true
 SITE_DIR=""                  # catalog site/ dir inside a git working copy
 PULL=true
 PUSH=true
+
+# ── Privacy (R-5, R-6, R-7) ──────────────────────────────────────────────
+# Allowlist of project dirs to collect. EMPTY = COLLECT NOTHING (fails closed).
+# A pattern with ':' matches "<label>:<project-dir>", otherwise the dir name alone.
+# Claude Code dirs look like "-Users-you-src-turbo-flow". See: loopwatch-run.sh --list-sources
+INCLUDE_PROJECTS=(
+  # "*-src-turbo-flow"
+  # "*-src-turbo-rig"
+  # "cowork:*"
+)
+EXCLUDE_PROJECTS=()          # always wins over INCLUDE_PROJECTS
+
+# Client/entity names redacted before the model sees anything and re-scanned after.
+# One regex per line, optional "=>replacement". Never commit this file.
+REDACT_LIST="$HOME/.config/loopwatch/redact.list"
+
+# The catalog must deploy behind Vercel Deployment Protection. Preflight fails
+# unless this says "protected" (or ALLOW_PUBLIC=true, which you should not set).
+SITE_VISIBILITY="protected"
+ALLOW_PUBLIC=false
+# Optional live check: set these and export VERCEL_TOKEN (never stored by loopwatch).
+VERCEL_PROJECT_ID=""
+VERCEL_TEAM_ID=""
