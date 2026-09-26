@@ -14,7 +14,7 @@ GitHub API (commits, PRs)    ┘  your commits + merged PRs · catalog repo excl
                                         ▼
                  validator (no script/handlers/embeds/external loads) → post-scan (secrets + redact.list)
                                         ▼
-                 catalog repo: loopwatch/<date>-<time> branch (or the open PR) → gh pr create → protected Vercel preview → you merge
+                 catalog repo: loopwatch/<date>-<time> branch (or the open PR) → gh pr create → you review and merge → Railway serves main behind auth
                                         ▼
                  ledger row (~/.local/state/loopwatch/runs.jsonl): tokens, cost, pages, skip reason
 ```
@@ -66,7 +66,7 @@ Measured on claude 2.1.283 (dry runs, not a monthly average): a no-page day cost
 - **Scrub before the model.** Built-in patterns cover OpenAI/Anthropic `sk-` keys, Stripe `sk_/rk_/pk_ live/test`, GitHub tokens, AWS, Slack, Google `AIza`, JWTs, PEM headers, bearer tokens, `scheme://user:pass@` connection strings, `password=`/`token:`/`api_key=` assignments, and emails. On top of those, every line of your gitignored `redact.list` is applied, case-insensitive, with an optional `=>replacement`.
 - **Scan after the model.** Pages, titles, summaries, tags, slugs and the digest are re-scanned with the same rules. Any hit drops the page, or withholds the digest text. The drop is counted in the ledger without the matched text.
 - **Page firewall.** The validator reads real tags (a quoted `>` does not end a tag), decodes character references, and strips tab/CR/LF before matching. It drops any page with `<script`, `on*=` handlers, `iframe/object/embed/form/link/base/svg/math`, `<meta http-equiv>`, an external/`javascript:`/`data:` (non-image) URL in `src`/`href`/`srcset`/`action`/`poster`/…, or any CSS `url()`/`@import`/`expression()`. The catalog's CSP (`script-src 'self'`) is a second layer.
-- **Private catalog.** A publishing run refuses to start unless `SITE_VISIBILITY=protected`. If `VERCEL_PROJECT_ID` is set and `VERCEL_TOKEN` is in the environment, preflight also confirms Deployment Protection live through the Vercel API. The catalog repo's `vercel.json` adds a strict CSP (`script-src 'self'`) and `noindex`.
+- **Private catalog.** A publishing run refuses to start unless `SITE_VISIBILITY=protected`. With `SITE_URL` set, preflight also fetches `manifest.json` without credentials and fails unless the request is refused. The catalog is served on Railway by the catalog repo's `server.js`: Basic Auth, **fail closed** (503 until `CATALOG_USER`/`CATALOG_PASSWORD` are set), strict CSP (`script-src 'self'`) and `noindex`.
 - **No paths in state.** Watermark keys are sha256 hashes, and state lives in `~/.local/state/loopwatch`. Nothing from state is committed anywhere.
 
 ## Publishing model
@@ -110,7 +110,7 @@ lib/common.sh            claude runner (flag detection, JSON usage), ledger
 prompts/triage.md        Stage A: the value bar and candidate contract
 prompts/extract.md       Stage B: page contract
 site/                    catalog UI seed (index.html, app.js, manifest.json)
-catalog-template/        vercel.json (CSP), catalog-check CI, README for the catalog repo
+catalog-template/        catalog repo files: server.js (auth, fails closed), railway.json, catalog-check CI
 test/smoke-test.sh       37 sandboxed end-to-end cases, stubbed claude + gh
 docs/                    PRD-v0.2, revival notes, manifest schema, v0.1 PRD
 ```

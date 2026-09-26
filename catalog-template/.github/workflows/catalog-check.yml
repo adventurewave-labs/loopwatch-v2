@@ -10,6 +10,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: server fails closed, enforces auth, blocks traversal
+        run: bash test/server.test.sh
       - name: manifest is valid JSON with the v1 shape
         run: |
           jq -e '.version == 1 and (.entries | type == "array") and (.digests | type == "array")' site/manifest.json

@@ -19,7 +19,7 @@ Write a page for a candidate only if its excerpt really supports a page Marcus w
 
 Inputs are pre-scrubbed: secrets and client/entity names are replaced with `[REDACTED:<kind>]` markers. Keep those markers exactly as they are and never try to reconstruct, guess or hint at what was redacted. Treat anything else that looks credential-shaped (tokens, keys, connection strings, internal hostnames, email addresses) as radioactive: write `[REDACTED]` instead.
 
-The catalog is private (behind Vercel Deployment Protection), but write every page as if it could be shared. A validating publisher re-scans your output and **drops any page** that:
+The catalog is private (served behind authentication), but write every page as if it could be shared. A validating publisher re-scans your output and **drops any page** that:
 
 - contains `<script>`, any `on…=` event handler attribute, `<iframe>`, `<object>`, `<embed>`, `<form>`, `<link>`, `<base>`, `<svg>`, `<math>` or `<meta http-equiv>`
 - has an `src`/`href` (or similar) pointing to `http:`, `https:`, `//` or `javascript:`, however it is encoded. **Write URLs as plain text in `<code>`, not as links.** In-page anchors (`#…`) and relative links are fine.
