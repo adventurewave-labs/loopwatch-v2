@@ -46,6 +46,7 @@ From a Claude Code or Cowork session, just ask: *"run loopwatch"*. That runs `lo
 | `loopwatch sources` | every candidate source with `include` / `skip:self` / `skip:not-allowlisted` |
 | `loopwatch preflight` | PASS/WARN/FAIL checks. Exits non-zero on any FAIL |
 | `loopwatch ledger [N]` | last N runs, plus totals and the median cost of runs that made model calls |
+| `loopwatch doctor` | health at a glance, one OK/WARN/FAIL line each: config, `redact.list` mode, dependencies, the last run and its age, the privacy self-test over the last 14 runs, monthly spend against the cap, cost anomalies, prompt drift since the last run, whether the eval golden matches the current prompts, and the CI policy. Exits 1 on any FAIL, so it can gate a cron or a status bar |
 | `loopwatch discover` | read-only report on this machine's transcript paths and schema (Phase 0) |
 | `loopwatch schedule install [HH MM] \| remove \| print` | opt-in nightly launchd job |
 | `loopwatch setup` / `update` / `version` | |

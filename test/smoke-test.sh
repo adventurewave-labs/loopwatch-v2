@@ -760,6 +760,29 @@ grep -q "faithfulness 2 (< 4)" "$W/judge2.txt" || fail "judge failure reason: $(
 ok "golden page judged within baseline; call is haiku/tool-free/budget-capped; faithfulness 2 fails with the claim listed"
 
 # ═════════════════════════════════════════════════════════════════════════
+setup "loopwatch doctor: healthy after a run; leaks, spend, anomalies and prompt drift surface (backlog #28)"
+lw
+doc() { bash "$SRC_ROOT/bin/loopwatch" doctor > "$W/doctor.txt" 2>&1; }
+doc || fail "healthy install must pass doctor: $(cat "$W/doctor.txt")"
+grep -q '^OK    last-run       published, 1 page(s), \$0\.[0-9]* · 0h ago' "$W/doctor.txt" || fail "last run line: $(grep last-run "$W/doctor.txt")"
+grep -q '^OK    canary ' "$W/doctor.txt" || fail "canary line: $(grep canary "$W/doctor.txt")"
+grep -q '^OK    ci-policy' "$W/doctor.txt" || fail "ci-policy line missing"
+chmod 644 "$H/.config/loopwatch/redact.list"
+L="$LW_STATE/runs.jsonl"
+jq -c '.cost_usd = 17.5 | .cost_anomaly = true | .prompt_version = "000000000000"' <(tail -n 1 "$L") >> "$L"
+doc || fail "warnings alone must not fail doctor: $(cat "$W/doctor.txt")"
+grep -q '^WARN  redact.list    mode 644' "$W/doctor.txt" || fail "redact.list mode not flagged"
+grep -q '^WARN  spend          \$17\.[0-9]* of \$20.00 this month (8[0-9]%)' "$W/doctor.txt" || fail "spend line: $(grep spend "$W/doctor.txt")"
+grep -q '^WARN  cost           1 cost anomaly' "$W/doctor.txt" || fail "anomaly line: $(grep cost "$W/doctor.txt")"
+grep -q '^WARN  prompts        changed since the last run (000000000000 ->' "$W/doctor.txt" || fail "drift line: $(grep prompts "$W/doctor.txt")"
+jq -c '.status = "failed" | .skipped_reason = "canary_leak" | .cost_usd = 0' <(tail -n 1 "$L") >> "$L"
+if doc; then fail "a canary leak must fail doctor"; fi
+grep -q '^FAIL  last-run       failed 0h ago: canary_leak' "$W/doctor.txt" || fail "failed-run line: $(grep last-run "$W/doctor.txt")"
+grep -q '^FAIL  canary         1 privacy self-test failure' "$W/doctor.txt" || fail "canary FAIL line: $(grep canary "$W/doctor.txt")"
+tail -1 "$W/doctor.txt" | grep -q '^doctor: 2 fail, 4 warn$' || fail "summary: $(tail -1 "$W/doctor.txt")"
+ok "healthy run passes; redact.list mode, 88% of the monthly cap, anomaly, prompt drift warn; a canary leak fails (exit 1)"
+
+# ═════════════════════════════════════════════════════════════════════════
 setup "near-duplicate guard: same topic under a new slug is dropped, new topic kept"
 lw
 jq -e '.entries | length == 1' "$SITE/manifest.json" >/dev/null || fail "first publish"

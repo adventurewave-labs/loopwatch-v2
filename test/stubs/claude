@@ -26,6 +26,7 @@ sys="" schema="" model="" persist=true budget="" tools="<unset>" fbm=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -p) ;;
+    --version) echo "2.1.283 (Claude Code stub)"; exit 0 ;;
     --model) shift; model="$1" ;;
     --system-prompt) shift; sys="$1" ;;
     --json-schema) shift; schema="$1" ;;
