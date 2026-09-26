@@ -23,6 +23,10 @@ source "$CONF"
 : "${CLAUDE_BIN:=claude}"
 : "${MODEL:=sonnet}"                    # stage B (writing)
 : "${TRIAGE_MODEL:=haiku}"             # stage A (triage)
+: "${FALLBACK_MODEL:=haiku}"           # writer fallback when MODEL is overloaded ("" = none)
+: "${TRIAGE_FALLBACK_MODEL:=}"         # triage fallback (default none: haiku is already the cheapest)
+: "${CLAUDE_RETRIES:=2}"               # extra attempts on transient API/network failures
+: "${CLAUDE_RETRY_BASE_S:=15}"         # backoff base seconds (doubles each retry, plus jitter)
 : "${THINKING_TOKENS:=0}"
 : "${TRIAGE_BUDGET_USD:=0.30}"
 : "${MAX_CANDIDATES:=5}"

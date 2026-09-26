@@ -49,7 +49,7 @@ claude_supports() {
 # record is appended to $USAGE_FILE. Returns the CLI exit code; sets CLAUDE_LAST_SUBTYPE.
 CLAUDE_LAST_SUBTYPE=""
 run_claude() {
-  local stage="$1" model="$2" sys_file="$3" input_file="$4" schema_file="$5" budget="$6"
+  local stage="$1" model="$2" sys_file="$3" input_file="$4" schema_file="$5" budget="$6" fallback="${7:-}" attempt="${8:-1}" is_fb="${9:-false}"
   local out="$RUN_DIR/$stage.json" err="$RUN_DIR/$stage.err" rc t0
   local -a args
   args=(-p --model "$model" --output-format json --tools ""
@@ -64,6 +64,10 @@ run_claude() {
   done
   args+=(--strict-mcp-config)
   if claude_supports --no-session-persistence; then args+=(--no-session-persistence); fi
+  # in-call fallback: the CLI itself switches model when the primary is overloaded/unavailable
+  if [[ -n "$fallback" && "$fallback" != "$model" ]] && claude_supports --fallback-model; then
+    args+=(--fallback-model "$fallback")
+  fi
   if [[ -n "$budget" ]] && claude_supports --max-budget-usd; then args+=(--max-budget-usd "$budget"); fi
   if [[ -n "${CLAUDE_EXTRA_ARGS:-}" ]]; then
     # shellcheck disable=SC2206
@@ -80,8 +84,9 @@ run_claude() {
 
   # Parse usage tolerantly: a non-JSON stdout (old CLI, crash) records nulls.
   local rec
-  rec="$(jq -c --arg stage "$stage" --arg model "$model" --argjson rc "$rc" --argjson t0 "$t0" '
-      {stage: $stage, model: $model, rc: $rc, start_s: $t0,
+  rec="$(jq -c --arg stage "$stage" --arg model "$model" --argjson rc "$rc" --argjson t0 "$t0" --argjson attempt "$attempt" --argjson fb "$is_fb" '
+      {stage: $stage, model: $model, rc: $rc, start_s: $t0, attempt: $attempt, fallback_attempt: $fb,
+       models_used: ((.modelUsage // {}) | keys),
        in: (((.usage.input_tokens // 0) + (.usage.cache_creation_input_tokens // 0))),
        cached: (.usage.cache_read_input_tokens // 0),
        out: (.usage.output_tokens // 0),
@@ -90,13 +95,60 @@ run_claude() {
        is_error: (.is_error // ($rc != 0)),
        subtype: (.subtype // "")}' "$out" 2>/dev/null || true)"
   if [[ -z "$rec" ]]; then
-    rec="$(jq -nc --arg stage "$stage" --arg model "$model" --argjson rc "$rc" --argjson t0 "$t0" \
-      '{stage: $stage, model: $model, rc: $rc, start_s: $t0, in: 0, cached: 0, out: 0, cost_usd: 0,
+    rec="$(jq -nc --arg stage "$stage" --arg model "$model" --argjson rc "$rc" --argjson t0 "$t0" --argjson attempt "$attempt" --argjson fb "$is_fb" \
+      '{stage: $stage, model: $model, rc: $rc, start_s: $t0, attempt: $attempt, fallback_attempt: $fb, models_used: [], in: 0, cached: 0, out: 0, cost_usd: 0,
         duration_ms: 0, is_error: ($rc != 0), subtype: "unparsed_output"}')"
   fi
   printf '%s\n' "$rec" >> "$USAGE_FILE"
   CLAUDE_LAST_SUBTYPE="$(printf '%s' "$rec" | jq -r '.subtype')"
   return "$rc"
+}
+
+# claude_transient <stage>: 0 if the last call failed for a reason worth retrying (API
+# overload, rate limit, 5xx, network), 1 otherwise. Budget caps and schema/parse problems
+# are NOT transient: retrying them would only spend money again.
+claude_transient() {
+  local out="$RUN_DIR/$1.json" err="$RUN_DIR/$1.err" txt
+  case "$CLAUDE_LAST_SUBTYPE" in *budget*|*max_turns*) return 1 ;; esac
+  txt="$( { jq -r '[.result // "", .subtype // "", (.api_error_status // "" | tostring)] | join(" ")' "$out" 2>/dev/null; tail -c 4000 "$err" 2>/dev/null; } )"
+  printf '%s' "$txt" | grep -Eqi 'overloaded|\b529\b|rate[ _-]?limit|\b429\b|\b50[0234]\b|internal server error|service unavailable|ECONNRESET|ETIMEDOUT|ECONNREFUSED|EAI_AGAIN|socket hang up|network error|fetch failed'
+}
+
+# call_stage <stage> <model> <fallback-model> <sys> <input> <schema> <budget>
+#
+# Resilient wrapper around run_claude:
+#   * transient failures retry up to CLAUDE_RETRIES times with jittered exponential backoff
+#     (CLAUDE_RETRY_BASE_S * 2^n + 0..base s); each retry's budget is the stage budget minus
+#     what the stage has already spent, so retries can never exceed the cap
+#   * the CLI's own --fallback-model handles overload inside a call; if the primary still
+#     fails transiently after the retries, one last attempt runs ON the fallback model
+#   * anything non-transient (budget cap, bad output) returns immediately
+# Every attempt is a usage record (attempt=N), so the ledger shows retries and fallbacks.
+call_stage() {
+  local stage="$1" model="$2" fallback="$3" sys="$4" input="$5" schema="$6" budget="$7"
+  local n=1 max=$(( ${CLAUDE_RETRIES:-2} + 1 )) base="${CLAUDE_RETRY_BASE_S:-15}" left spent delay is_fb=false
+  while :; do
+    spent="$(jq -s --arg s "$stage" 'map(select(.stage == $s) | .cost_usd) | add // 0' "$USAGE_FILE")"
+    if [[ "$spent" == 0 ]]; then left="$budget"
+    else left="$(jq -n --argjson b "$budget" --argjson s "$spent" '($b - $s) * 100 | floor / 100')"; fi
+    if jq -e -n --argjson l "$left" '$l < 0.02' >/dev/null; then
+      log "$stage: no budget left for another attempt (\$$left)"; CLAUDE_LAST_SUBTYPE="error_max_budget_usd"; return 1
+    fi
+    if run_claude "$stage" "$model" "$sys" "$input" "$schema" "$left" "$fallback" "$n" "$is_fb"; then return 0; fi
+    claude_transient "$stage" || return 1
+    if [[ "$n" -ge "$max" ]]; then
+      if [[ -n "$fallback" && "$fallback" != "$model" ]]; then
+        log "$stage: $model still failing after $n attempt(s); last try on fallback model $fallback"
+        model="$fallback"; fallback=""; is_fb=true; n=$((n + 1)); max="$n"
+        continue
+      fi
+      log "$stage: giving up after $n attempt(s) (transient: ${CLAUDE_LAST_SUBTYPE:-error})"; return 1
+    fi
+    delay=$(( base * (1 << (n - 1)) + (base > 0 ? RANDOM % (base + 1) : 0) ))
+    log "$stage: transient failure on attempt $n/$max, retrying in ${delay}s"
+    sleep "$delay"
+    n=$((n + 1))
+  done
 }
 
 # ── run ledger (Turbo Rig seam, R-12) ───────────────────────────────────
@@ -138,7 +190,13 @@ ledger_append() {
       bundle_bytes: $bundle_bytes, trimmed_bytes: $trimmed, postscan_drops: $drops,
       validator_drops: $vdrops, near_dup_drops: $ndrops,
       stage_b_skipped: (if $sbskip == "" then null else $sbskip end),
-      stages: map({stage, model, cost_usd, in, cached, out, subtype})
+      attempts: length,
+      retries: (length - (map(.stage) | unique | length)),
+      fallback_used: any(.[]; . as $r
+                         | ($r.fallback_attempt // false)
+                           or (($r.models_used // []) | length > 0
+                               and (map(ascii_downcase | contains($r.model | ascii_downcase)) | any | not))),
+      stages: map({stage, model, attempt, cost_usd, in, cached, out, subtype, models_used})
     }' "$usage")" || return 1
   printf '%s\n' "$row" >> "$LEDGER"
   # optional OpenTelemetry GenAI export (lib/otel.sh); never fails the run

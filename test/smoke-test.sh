@@ -31,7 +31,8 @@ setup() {
   LW_STATE="$H/.local/state/loopwatch"
   CALLS="$W/claude-calls.log"; : > "$CALLS"
   export STUB_CALLS="$CALLS"
-  unset STUB_INPUTS STUB_SCHEMAS STUB_TRIAGE_COST STUB_PAGES STUB_TRIAGE STUB_FAIL STUB_HELP_FLAGS STUB_MARKER STUB_DIGEST STUB_HIGHLIGHT 2>/dev/null || true
+  unset STUB_INPUTS STUB_SCHEMAS STUB_TRIAGE_COST STUB_PAGES STUB_TRIAGE STUB_FAIL STUB_HELP_FLAGS STUB_MARKER STUB_DIGEST STUB_HIGHLIGHT STUB_OVERLOAD STUB_MODEL_USED 2>/dev/null || true
+  export STUB_FAIL_STATE="$W/stub-fail-state"; mkdir -p "$STUB_FAIL_STATE"
   LWLOG=""
 
   # the catalog "GitHub repo": a bare remote seeded with site/ on main
@@ -741,6 +742,46 @@ unset STUB_HELP_FLAGS
 jq -e '.status == "failed" and .skipped_reason == "cli_unsupported"' <(ledger_last) >/dev/null || fail "ledger: $(ledger_last)"
 jq -e '.files | length == 0' "$LW_STATE/watermarks.json" >/dev/null 2>&1 || [[ ! -f "$LW_STATE/watermarks.json" ]] || fail "watermarks advanced"
 ok "missing isolation flag fails closed before any call"
+
+# ═════════════════════════════════════════════════════════════════════════
+setup "resilient calls: transient overload retried with backoff, then published"
+conf 'CLAUDE_RETRY_BASE_S=0'
+STUB_OVERLOAD="triage:2" lw
+[[ "$(grep -c 'stage=triage' "$CALLS")" == 3 ]] || fail "triage should run 3 times (2 overloads + success): $(grep -c 'stage=triage' "$CALLS")"
+grep -q "triage: transient failure on attempt 1/3" "$LWLOG" || fail "retry not logged"
+jq -e '.status == "published" and .pages == 1 and .attempts == 4 and .retries == 2 and .fallback_used == false' <(ledger_last) >/dev/null \
+  || fail "ledger: $(ledger_last | jq -c '{status, pages, attempts, retries, fallback_used}')"
+ok "2 overloads absorbed; ledger attempts=4 retries=2"
+
+setup "resilient calls: writer stays overloaded -> last attempt on FALLBACK_MODEL"
+conf 'CLAUDE_RETRY_BASE_S=0'
+STUB_OVERLOAD="extract:99:sonnet" lw
+grep "stage=extract" "$CALLS" | head -1 | grep -q "model=sonnet fallback=\[haiku\]" || fail "writer should pass --fallback-model haiku to the CLI: $(grep stage=extract "$CALLS" | head -1)"
+[[ "$(grep -c 'stage=extract model=sonnet' "$CALLS")" == 3 && "$(grep -c 'stage=extract model=haiku' "$CALLS")" == 1 ]] \
+  || fail "want 3 sonnet attempts then 1 haiku: $(grep stage=extract "$CALLS" | cut -d' ' -f2-3 | tr '\n' ';')"
+jq -e '.status == "published" and .pages == 1 and .fallback_used == true and .model == "haiku+sonnet"' <(ledger_last) >/dev/null \
+  || fail "ledger: $(ledger_last | jq -c '{status, pages, fallback_used, model}')"
+ok "3 sonnet attempts, then published on haiku; fallback_used=true"
+
+setup "resilient calls: CLI in-call fallback is detected; budget errors never retry"
+STUB_MODEL_USED="claude-haiku-4-5-20251001" lw
+jq -e '.fallback_used == true' <(ledger_last) >/dev/null || fail "in-call fallback (modelUsage has only haiku for a sonnet call) not detected"
+printf '%s\n' "$(jq -nc '{type:"user",cwd:"/Users/dev/src/turbo-flow",message:{role:"user",content:"Decided the ingest workers should publish a heartbeat to the queue every 30s so the reaper can requeue jobs from dead pods without waiting for the visibility timeout; tradeoff is one extra write per worker per 30s, acceptable at our scale."}}')" >> "$TX"
+: > "$CALLS"
+export STUB_FAIL=budget
+if lw; then fail "budget failure must fail the run"; fi
+unset STUB_FAIL
+[[ "$(calls)" == 1 ]] || fail "a budget cap must not be retried: $(calls) calls"
+ok "in-call fallback flagged; budget cap not retried (1 call)"
+
+setup "resilient calls: persistent overload with no fallback fails closed after the cap"
+conf 'CLAUDE_RETRY_BASE_S=0'
+conf 'CLAUDE_RETRIES=1'
+if STUB_OVERLOAD="triage:99" lw; then fail "persistent overload must fail the run"; fi
+[[ "$(calls)" == 2 ]] || fail "CLAUDE_RETRIES=1 means 2 attempts, got $(calls)"
+jq -e '.status == "failed" and .skipped_reason == "claude_error" and .attempts == 2' <(ledger_last) >/dev/null || fail "ledger: $(ledger_last)"
+jq -e '.files | length == 0' "$LW_STATE/watermarks.json" >/dev/null 2>&1 || [[ ! -f "$LW_STATE/watermarks.json" ]] || fail "watermarks advanced"
+ok "gave up after 2 attempts, failed closed, watermarks held"
 
 echo
 echo "PASS — $N_CASES cases green"

@@ -16,13 +16,13 @@
 set -u
 
 if [[ "${1:-}" == "--help" ]]; then
-  for f in ${STUB_HELP_FLAGS:---output-format --max-budget-usd --no-session-persistence --strict-mcp-config --json-schema --tools --system-prompt}; do
+  for f in ${STUB_HELP_FLAGS:---output-format --max-budget-usd --no-session-persistence --strict-mcp-config --json-schema --tools --system-prompt --fallback-model}; do
     echo "  $f    (stub)"
   done
   exit 0
 fi
 
-sys="" schema="" model="" persist=true budget="" tools="<unset>"
+sys="" schema="" model="" persist=true budget="" tools="<unset>" fbm=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -p) ;;
@@ -32,6 +32,7 @@ while [[ $# -gt 0 ]]; do
     --tools) shift; tools="$1" ;;
     --no-session-persistence) persist=false ;;
     --max-budget-usd) shift; budget="$1" ;;
+    --fallback-model) shift; fbm="$1" ;;
     --output-format) shift ;;
   esac
   shift
@@ -44,7 +45,7 @@ has_bundle=no; printf '%s' "$input" | grep -q '<file path="bundle/' && has_bundl
 has_excerpt=no; printf '%s' "$input" | grep -q '<excerpt id=' && has_excerpt=yes
 schema_ok=no; printf '%s' "$schema" | jq -e 'type == "object"' >/dev/null 2>&1 && schema_ok=yes
 if [[ -n "${STUB_SCHEMAS:-}" ]]; then mkdir -p "$STUB_SCHEMAS"; printf '%s' "$schema" > "$STUB_SCHEMAS/$( printf '%s' "$sys" | grep -q 'LOOPWATCH-STAGE: triage' && echo triage || echo extract).json"; fi
-echo "call stage=$stage model=$model persist=$persist budget=$budget tools=[$tools] schema=$schema_ok thinking=${MAX_THINKING_TOKENS:-unset} bundle=$has_bundle excerpts=$has_excerpt cwd=$PWD cwdfiles=$(ls -A | tr '\n' ',')" >> "${STUB_CALLS:-/dev/null}"
+echo "call stage=$stage model=$model fallback=[$fbm] persist=$persist budget=$budget tools=[$tools] schema=$schema_ok thinking=${MAX_THINKING_TOKENS:-unset} bundle=$has_bundle excerpts=$has_excerpt cwd=$PWD cwdfiles=$(ls -A | tr '\n' ',')" >> "${STUB_CALLS:-/dev/null}"
 if [[ -n "${STUB_INPUTS:-}" ]]; then
   mkdir -p "$STUB_INPUTS"
   n=$(( $(ls "$STUB_INPUTS" | wc -l) + 1 ))
@@ -61,12 +62,29 @@ if [[ "$persist" == "true" ]]; then
 fi
 
 result() {  # result <cost> <is_error> <subtype> <structured-json|null> [result-text]
-  jq -nc --argjson cost "$1" --argjson err "$2" --arg sub "$3" --argjson so "$4" --arg res "${5:-done}" --arg model "$model" '
+  jq -nc --argjson cost "$1" --argjson err "$2" --arg sub "$3" --argjson so "$4" --arg res "${5:-done}" --arg mu "$model_used" '
     {type:"result", subtype:$sub, is_error:$err, duration_ms:1234, num_turns:2, result:$res,
      structured_output:$so, total_cost_usd:$cost,
      usage:{input_tokens:1200, cache_creation_input_tokens:300, cache_read_input_tokens:5000, output_tokens:800},
-     modelUsage:{($model):{costUSD:$cost}}}'
+     modelUsage:{($mu):{costUSD:$cost}}}'
 }
+
+# STUB_OVERLOAD="<stage>:<n>[:<model>]" -> the first n calls of that stage (optionally only on
+# that model) fail like a real 529 overload; STUB_FAIL_STATE is the counter dir.
+# STUB_MODEL_USED overrides the modelUsage key (emulates the CLI's in-call --fallback-model).
+if [[ -n "${STUB_OVERLOAD:-}" ]]; then
+  IFS=: read -r ov_stage ov_n ov_model <<< "$STUB_OVERLOAD"
+  if [[ "$ov_stage" == "$stage" && ( -z "$ov_model" || "$ov_model" == "$model" ) ]]; then
+    cnt_f="${STUB_FAIL_STATE:-/tmp}/overload-$stage"; c=$(( $(cat "$cnt_f" 2>/dev/null || echo 0) + 1 )); echo "$c" > "$cnt_f"
+    if [[ "$c" -le "$ov_n" ]]; then
+      jq -nc '{type:"result", subtype:"success", is_error:true, duration_ms:900, num_turns:1, total_cost_usd:0,
+               result:"API Error: 529 {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}",
+               usage:{input_tokens:0, output_tokens:0}}'
+      exit 1
+    fi
+  fi
+fi
+[[ -n "${STUB_MODEL_USED:-}" ]] && model_used="$STUB_MODEL_USED" || model_used="$model"
 
 case "${STUB_FAIL:-}" in
   budget)  result 1.25 true error_max_budget_usd null; exit 1 ;;

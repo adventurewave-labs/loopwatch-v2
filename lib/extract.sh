@@ -168,7 +168,7 @@ run_extraction() {
 
   build_triage_input
   log "stage A triage: model=$TRIAGE_MODEL budget=\$$budget_a input=$(( $(file_size "$RUN_DIR/triage-input.txt") / 1024 ))KB"
-  if ! run_claude triage "$TRIAGE_MODEL" "$ROOT_DIR/prompts/triage.md" "$RUN_DIR/triage-input.txt" "$RUN_DIR/triage.schema.json" "$budget_a"; then
+  if ! call_stage triage "$TRIAGE_MODEL" "${TRIAGE_FALLBACK_MODEL:-}" "$ROOT_DIR/prompts/triage.md" "$RUN_DIR/triage-input.txt" "$RUN_DIR/triage.schema.json" "$budget_a"; then
     case "$CLAUDE_LAST_SUBTYPE" in
       *budget*) DIE_REASON=budget_exceeded; die "triage hit its \$$budget_a budget cap (watermarks not advanced)" ;;
       *)        DIE_REASON=claude_error;    die "triage failed (subtype=$CLAUDE_LAST_SUBTYPE) — see triage.json/triage.err" ;;
@@ -203,7 +203,7 @@ run_extraction() {
 
   build_writer_input
   log "stage B writing: model=$MODEL budget=\$$budget_b input=$(( $(file_size "$RUN_DIR/writer-input.txt") / 1024 ))KB"
-  if ! run_claude extract "$MODEL" "$ROOT_DIR/prompts/extract.md" "$RUN_DIR/writer-input.txt" "$ROOT_DIR/schemas/pages.schema.json" "$budget_b"; then
+  if ! call_stage extract "$MODEL" "${FALLBACK_MODEL:-}" "$ROOT_DIR/prompts/extract.md" "$RUN_DIR/writer-input.txt" "$ROOT_DIR/schemas/pages.schema.json" "$budget_b"; then
     case "$CLAUDE_LAST_SUBTYPE" in
       *budget*) DIE_REASON=budget_exceeded; die "writing stage hit its \$$budget_b budget cap (watermarks not advanced)" ;;
       *)        DIE_REASON=claude_error;    die "writing stage failed (subtype=$CLAUDE_LAST_SUBTYPE) — see extract.json/extract.err" ;;
