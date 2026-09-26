@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # loopwatch lib — delta collection (sourced by loopwatch-run.sh; do not execute)
-# Contract: fills $STAGING/bundle/{transcripts,git}/ + bundle/context.json,
-# and writes advanced offsets to $STAGING/new-watermarks.json (applied only on success).
+# Contract: fills $RUN_DIR/bundle/{transcripts,git}/ + bundle/context.json, records each
+# bundle file's source age in $RUN_DIR/bundle-index.tsv, and writes advanced offsets to
+# $RUN_DIR/new-watermarks.json (applied only after a successful publish or skip).
+#
+# Watermark state is keyed by hash_key(<absolute path>) — never the path itself (bug 7).
 
 # Best-effort credential scrub before anything reaches the model or the repo.
 scrub() {
@@ -14,90 +17,197 @@ scrub() {
     -e 's/eyJ[A-Za-z0-9_-]{15,}\.[A-Za-z0-9_-]{15,}\.[A-Za-z0-9_-]{10,}/[REDACTED:jwt]/g' \
     -e 's/-----BEGIN [A-Z ]*PRIVATE KEY-----/[REDACTED:pem]/g'
 }
+scrub_all() { scrub; }
 
 # JSONL transcript -> readable "[role] text" lines; drops tool-call noise.
-# Tolerant of schema drift: unparseable lines are silently skipped.
+# Claude Code 2.1.x schema (docs/revival-notes.md): drops isMeta (harness-injected)
+# and isSidechain (subagent) lines, lines whose cwd is loopwatch's own run dir
+# (second self-ingestion guard), and inline <system-reminder> blocks.
+# Tolerant of schema drift: unparseable lines are skipped.
 filter_transcript() {
-  jq -r '
+  jq -r --arg rundir "$RUN_DIR" '
     select(.type == "user" or .type == "assistant")
+    | select((.isMeta // false) != true and (.isSidechain // false) != true)
+    | select(((.cwd // "") | (. == $rundir or endswith("/loopwatch/run"))) | not)
     | .message as $m
     | (($m.content // empty)
        | if type == "string" then .
          else ([ .[]? | select(.type? == "text") | .text ] | join("\n"))
-         end) as $t
-    | select(($t // "") | length > 2)
-    | "[" + ($m.role // .type) + "] " + $t
+         end)
+    | gsub("(?s)<system-reminder>.*?</system-reminder>"; "")
+    | gsub("^\\s+|\\s+$"; "") as $t
+    | select(($t | length) > 2)
+    | "[" + ($m.role // "unknown") + "] " + $t
   ' 2>/dev/null || true
+}
+
+# Project dirs loopwatch must never read: its own run dir (v0.2) and v0.1 mktemp dirs.
+is_self_project() {
+  local dir="$1" enc
+  enc="$(encode_project_dir "$RUN_DIR")"
+  case "$dir" in
+    "$enc"|*-loopwatch-run) return 0 ;;
+    *loopwatch-[A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9]) return 0 ;;
+  esac
+  return 1
+}
+
+wm_get() { jq -r --arg k "$1" '.files[$k] // empty' "$WATERMARKS"; }
+wm_set() {
+  jq --arg k "$1" --argjson v "$2" '.files[$k] = $v' \
+    "$RUN_DIR/new-watermarks.json" > "$RUN_DIR/nw.tmp" \
+    && mv "$RUN_DIR/nw.tmp" "$RUN_DIR/new-watermarks.json"
+}
+
+# decide_source <label> <file>: echoes "skip:<reason>" or "ok"
+decide_source() {
+  local dir
+  dir="$(basename "$(dirname "$2")")"
+  if is_self_project "$dir"; then echo "skip:self"; return; fi
+  echo "ok"
 }
 
 # collect_globs <label> <glob>...
 collect_globs() {
   local label="$1"; shift
-  local pat f size old out n=0
+  local pat f key size old chunk len partial consumed out n=0 cwd proj sess now decision
+  now="$(now_epoch)"
   for pat in "$@"; do
     while IFS= read -r f; do
       [[ -f "$f" ]] || continue
-      size="$(wc -c < "$f" | tr -d ' ')"
-      old="$(jq -r --arg k "$f" '.files[$k] // 0' "$WATERMARKS")"
-      if [[ "$size" -le "$old" ]]; then
+      decision="$(decide_source "$label" "$f")"
+      [[ "$decision" == "ok" ]] || continue
+      key="$(hash_key "$f")"
+      size="$(file_size "$f")"
+      old="$(wm_get "$key")"
+
+      if [[ -z "$old" ]]; then
+        # first sighting: only files touched within FIRST_RUN_LOOKBACK_HOURS are mined
+        # from the start; older history is watermarked at its current size and skipped.
+        if [[ $(( now - $(file_mtime "$f") )) -gt $(( FIRST_RUN_LOOKBACK_HOURS * 3600 )) ]]; then
+          wm_set "$key" "$size"
+          continue
+        fi
+        old=0
+      fi
+      if [[ "$size" -lt "$old" ]]; then
+        log "source shrank (truncated/rotated) — re-reading from 0: $label:$key"   # bug 4
+        old=0
+      fi
+      [[ "$size" -gt "$old" ]] || continue
+
+      # Take the delta, then stop at the last complete line so a session that is
+      # still being written never loses its trailing partial JSON line (bug 3).
+      chunk="$RUN_DIR/chunk.tmp"
+      tail -c "+$((old + 1))" "$f" > "$chunk"
+      len="$(file_size "$chunk")"
+      if [[ "$len" -gt 0 ]] && [[ "$(tail -c 1 "$chunk" | od -An -c | tr -d ' ')" != '\n' ]]; then
+        partial="$(tail -n 1 "$chunk" | wc -c | tr -d ' ')"
+        consumed=$(( len - partial ))
+      else
+        consumed="$len"
+      fi
+      if [[ "$consumed" -le 0 ]]; then
+        rm -f "$chunk"
         continue
       fi
+
+      cwd="$(head -c "$consumed" "$chunk" | jq -r 'select(.cwd != null) | .cwd' 2>/dev/null | head -1 || true)"
+      proj="$(basename "${cwd:-unknown}")"
+      sess="$(basename "$f" .jsonl | cut -c1-8)"
       n=$((n + 1))
-      out="$STAGING/bundle/transcripts/${label}-${n}.txt"
+      out="$RUN_DIR/bundle/transcripts/${label}-${n}.txt"
       {
-        echo "=== source: $f (bytes ${old}..${size}) ==="
+        echo "=== source: ${label}:${proj} · session ${sess} ==="
         # delta only; keep the most recent MAX_FILE_KB after filtering
-        tail -c "+$((old + 1))" "$f" | filter_transcript | scrub | tail -c "$((MAX_FILE_KB * 1024))"
-      } > "$out"
+        head -c "$consumed" "$chunk" | filter_transcript | tail -c "$((MAX_FILE_KB * 1024))"
+      } | scrub_all > "$out"
+      rm -f "$chunk"
       # drop if filtering left nothing beyond the header
-      if [[ "$(wc -c < "$out" | tr -d ' ')" -lt 250 ]]; then
+      if [[ "$(grep -v '^=== ' "$out" | wc -c | tr -d ' ')" -lt 20 ]]; then
         rm -f "$out"
+      else
+        printf '%s\t%s\n' "$(file_mtime "$f")" "bundle/transcripts/${label}-${n}.txt" >> "$RUN_DIR/bundle-index.tsv"
       fi
-      jq --arg k "$f" --argjson v "$size" '.files[$k] = $v' \
-        "$STAGING/new-watermarks.json" > "$STAGING/nw.tmp" \
-        && mv "$STAGING/nw.tmp" "$STAGING/new-watermarks.json"
+      wm_set "$key" "$((old + consumed))"
     done < <(compgen -G "$pat" || true)
   done
 }
 
 collect_git() {
-  local repo name head last out
+  local repo name key head last out
   for repo in ${GIT_REPOS[@]+"${GIT_REPOS[@]}"}; do
     if [[ ! -d "$repo/.git" ]]; then
-      log "git source missing, skipping: $repo"
+      log "git source missing, skipping: $(basename "$repo")"
       continue
     fi
     name="$(basename "$repo")"
+    key="$(hash_key "$repo")"
     head="$(git -C "$repo" rev-parse HEAD 2>/dev/null || true)"
     [[ -n "$head" ]] || continue
-    last="$(jq -r --arg k "$repo" '.git[$k] // ""' "$WATERMARKS")"
+    last="$(jq -r --arg k "$key" '.git[$k] // ""' "$WATERMARKS")"
 
-    local patch_args=""
-    if [[ "$GIT_INCLUDE_PATCH" == "true" ]]; then
-      patch_args="-p --unified=2"
-    fi
-
-    out="$STAGING/bundle/git/${name}.log"
+    out="$RUN_DIR/bundle/git/${name}.log"
     {
-      echo "=== repo: $repo ==="
+      echo "=== repo: $name ==="
       if [[ -n "$last" ]] && git -C "$repo" cat-file -e "$last" 2>/dev/null; then
-        # shellcheck disable=SC2086
-        { git -C "$repo" log "${last}..HEAD" --stat --date=short --format='%h %ad %s' $patch_args 2>/dev/null || true; } \
+        { git -C "$repo" log "${last}..HEAD" --stat --date=short --format='%h %ad %s' 2>/dev/null || true; } \
           | head -c "$((MAX_FILE_KB * 1024))"
       else
-        # first run for this repo (or rewritten history): last 48h
-        # shellcheck disable=SC2086
-        { git -C "$repo" log --since=48.hours --stat --date=short --format='%h %ad %s' $patch_args 2>/dev/null || true; } \
+        { git -C "$repo" log --since=48.hours --stat --date=short --format='%h %ad %s' 2>/dev/null || true; } \
           | head -c "$((MAX_FILE_KB * 1024))"
       fi
-    } | scrub > "$out"
-    if [[ "$(wc -c < "$out" | tr -d ' ')" -lt 120 ]]; then
+    } | scrub_all > "$out"
+    if [[ "$(grep -v '^=== ' "$out" | wc -c | tr -d ' ')" -lt 20 ]]; then
       rm -f "$out"
+    else
+      printf '%s\t%s\n' "$(now_epoch)" "bundle/git/${name}.log" >> "$RUN_DIR/bundle-index.tsv"
     fi
-    jq --arg k "$repo" --arg v "$head" '.git[$k] = $v' \
-      "$STAGING/new-watermarks.json" > "$STAGING/nw.tmp" \
-      && mv "$STAGING/nw.tmp" "$STAGING/new-watermarks.json"
+    jq --arg k "$key" --arg v "$head" '.git[$k] = $v' \
+      "$RUN_DIR/new-watermarks.json" > "$RUN_DIR/nw.tmp" \
+      && mv "$RUN_DIR/nw.tmp" "$RUN_DIR/new-watermarks.json"
   done
+}
+
+# Hard cap on the whole bundle (R-1, bug 2): drop the oldest content first until
+# the bundle fits MAX_BUNDLE_KB. Whole files go first; the boundary file keeps its tail.
+trim_bundle() {
+  local cap total excess ts rel f size keep hdr
+  cap=$(( MAX_BUNDLE_KB * 1024 ))
+  TRIMMED_BYTES=0
+  total="$(bundle_bytes)"
+  [[ "$total" -gt "$cap" ]] || return 0
+  excess=$(( total - cap ))
+  while IFS=$'\t' read -r ts rel; do
+    [[ "$excess" -gt 0 ]] || break
+    f="$RUN_DIR/$rel"
+    [[ -f "$f" ]] || continue
+    size="$(file_size "$f")"
+    if [[ "$size" -le "$excess" ]]; then
+      rm -f "$f"
+      excess=$(( excess - size ))
+      TRIMMED_BYTES=$(( TRIMMED_BYTES + size ))
+    else
+      hdr="$(head -n 1 "$f")"
+      keep=$(( size - excess - ${#hdr} - 64 ))
+      [[ "$keep" -gt 0 ]] || keep=0
+      { echo "$hdr"; echo "[... older content trimmed by loopwatch ...]"; tail -c "$keep" "$f"; } > "$f.tmp"
+      mv "$f.tmp" "$f"
+      TRIMMED_BYTES=$(( TRIMMED_BYTES + size - $(file_size "$f") ))
+      excess=0
+    fi
+  done < <(sort -n "$RUN_DIR/bundle-index.tsv" 2>/dev/null)
+  log "bundle over cap: trimmed ${TRIMMED_BYTES}B oldest-first to fit MAX_BUNDLE_KB=${MAX_BUNDLE_KB}"
+}
+
+bundle_bytes() {
+  find "$RUN_DIR/bundle/transcripts" "$RUN_DIR/bundle/git" -type f -exec cat {} + 2>/dev/null | wc -c | tr -d ' '
+}
+
+# bytes of real content (headers excluded) — the activity bar compares against this
+activity_bytes() {
+  find "$RUN_DIR/bundle/transcripts" "$RUN_DIR/bundle/git" -type f -exec cat {} + 2>/dev/null \
+    | grep -v '^=== ' | wc -c | tr -d ' '
 }
 
 write_context() {
@@ -107,40 +217,53 @@ write_context() {
     --argjson cats "$(jq '[.entries[].category] | unique' "$MANIFEST")" \
     --argjson slugs "$(jq '[.entries[-200:][].slug]' "$MANIFEST")" \
     '{run_date: $date, site_title: $title, existing_categories: $cats, recent_slugs: $slugs}' \
-    > "$STAGING/bundle/context.json"
+    > "$RUN_DIR/bundle/context.json"
 }
 
 collect_all() {
-  cp "$WATERMARKS" "$STAGING/new-watermarks.json"
+  cp "$WATERMARKS" "$RUN_DIR/new-watermarks.json"
+  : > "$RUN_DIR/bundle-index.tsv"
   collect_globs "claude-code" ${CLAUDE_CODE_GLOBS[@]+"${CLAUDE_CODE_GLOBS[@]}"}
   collect_globs "cowork"      ${COWORK_GLOBS[@]+"${COWORK_GLOBS[@]}"}
   collect_git
+  trim_bundle
+  BUNDLE_BYTES="$(bundle_bytes)"
   write_context
 }
 
 has_activity() {
-  local bytes
-  bytes="$(find "$STAGING/bundle/transcripts" "$STAGING/bundle/git" -type f -exec cat {} + 2>/dev/null | wc -c | tr -d ' ')"
-  [[ "${bytes:-0}" -ge "$ACTIVITY_MIN_BYTES" ]]
+  [[ "$(activity_bytes)" -ge "$ACTIVITY_MIN_BYTES" ]]
 }
 
 list_sources() {
-  local pat f size old repo
-  echo "— transcript sources —"
-  for pat in ${CLAUDE_CODE_GLOBS[@]+"${CLAUDE_CODE_GLOBS[@]}"} ${COWORK_GLOBS[@]+"${COWORK_GLOBS[@]}"}; do
-    echo "glob: $pat"
-    local found=0
-    while IFS= read -r f; do
-      [[ -f "$f" ]] || continue
-      found=1
-      size="$(wc -c < "$f" | tr -d ' ')"
-      old="$(jq -r --arg k "$f" '.files[$k] // 0' "$WATERMARKS")"
-      printf '  %10sB total  %10sB new   %s\n' "$size" "$((size - old))" "$f"
-    done < <(compgen -G "$pat" || true)
-    if [[ "$found" -eq 0 ]]; then echo "  (no matches)"; fi
+  local pat f size key old label decision
+  echo "— transcript sources (status · total · new · source) —"
+  for label in claude-code cowork; do
+    local -a globs=()
+    if [[ "$label" == "claude-code" ]]; then
+      globs=(${CLAUDE_CODE_GLOBS[@]+"${CLAUDE_CODE_GLOBS[@]}"})
+    else
+      globs=(${COWORK_GLOBS[@]+"${COWORK_GLOBS[@]}"})
+    fi
+    for pat in ${globs[@]+"${globs[@]}"}; do
+      echo "glob [$label]: $pat"
+      local found=0
+      while IFS= read -r f; do
+        [[ -f "$f" ]] || continue
+        found=1
+        decision="$(decide_source "$label" "$f")"
+        [[ "$decision" == "ok" ]] && decision="include"
+        size="$(file_size "$f")"
+        key="$(hash_key "$f")"
+        old="$(wm_get "$key")"
+        printf '  %-22s %10sB %10sB  %s:%s\n' "$decision" "$size" "$(( size - ${old:-0} ))" \
+          "$label" "$(basename "$(dirname "$f")")/$(basename "$f")"
+      done < <(compgen -G "$pat" || true)
+      if [[ "$found" -eq 0 ]]; then echo "  (no matches)"; fi
+    done
   done
   echo "— git sources —"
-  for repo in ${GIT_REPOS[@]+"${GIT_REPOS[@]}"}; do
-    if [[ -d "$repo/.git" ]]; then echo "  ok       $repo"; else echo "  MISSING  $repo"; fi
+  for f in ${GIT_REPOS[@]+"${GIT_REPOS[@]}"}; do
+    if [[ -d "$f/.git" ]]; then echo "  ok       $f"; else echo "  MISSING  $f"; fi
   done
 }

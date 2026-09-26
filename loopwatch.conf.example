@@ -1,36 +1,33 @@
-# loopwatch configuration — sourced by bin/loopwatch-run.sh (bash)
-# cp loopwatch.conf.example loopwatch.conf && edit. $ROOT_DIR = the loopwatch/ dir.
+# loopwatch configuration — sourced by bin/loopwatch-run.sh (bash 3.2)
+# Lives at ~/.config/loopwatch/loopwatch.conf (override with LOOPWATCH_CONF).
+# State (watermarks, ledger, logs, run dir) lives in ~/.local/state/loopwatch.
 
 # ── Sources ──────────────────────────────────────────────────────────────
-# Claude Code session transcripts (append-only JSONL, watermarked by byte offset)
+# Claude Code session transcripts (append-only JSONL, watermarked by byte offset).
+# loopwatch's own run dir is always excluded, whatever this glob says (R-4).
 CLAUDE_CODE_GLOBS=("$HOME/.claude/projects/*/*.jsonl")
 
-# Cowork session transcripts.
-# NOTE: verify this glob on your machine with `bin/loopwatch-run.sh --list-sources`
-# — the session storage layout under local-agent-mode-sessions may differ.
+# Cowork session transcripts. UNVERIFIED path — confirm with bin/loopwatch-discover.sh.
 COWORK_GLOBS=("$HOME/Library/Application Support/Claude/local-agent-mode-sessions/*/*/*.jsonl")
 
-# Git repos to mine for commit activity (watermarked by HEAD sha)
-GIT_REPOS=(
-  "$HOME/src/turbo-flow"
-  # "$HOME/src/creando-tu-matrix"
-)
-GIT_INCLUDE_PATCH=false      # true = include capped diffs, not just log --stat
+# On first sighting, only files touched in the last N hours are mined; older
+# history is watermarked at its current size and never sent to the model.
+FIRST_RUN_LOOKBACK_HOURS=48
 
-# ── Extraction ───────────────────────────────────────────────────────────
-CLAUDE_BIN="claude"          # set absolute path (`which claude`) for launchd runs
-MODEL="sonnet"               # nightly batch: sonnet is the right cost point
-MAX_TURNS=50                 # runaway guard for the headless session
-MAX_FILE_KB=200              # per-source delta cap fed to the model (post-filter)
-ACTIVITY_MIN_BYTES=300       # below this total delta, the run is skipped
+# Local git repos to mine (replaced by the GitHub API source in v0.2 phase 4).
+GIT_REPOS=()
+
+# ── Cost (R-1, R-2) ──────────────────────────────────────────────────────
+CLAUDE_BIN="claude"          # absolute path (`which claude`) for scheduled runs
+MODEL="sonnet"
+BUDGET_USD="1.00"            # hard cap per run, passed as --max-budget-usd when supported
+MAX_TURNS=50                 # passed only if the CLI lists --max-turns (PASS_MAX_TURNS=true forces it)
+MAX_FILE_KB=120              # per-source delta cap after filtering
+MAX_BUNDLE_KB=300            # whole-bundle cap; oldest content is trimmed first
+ACTIVITY_MIN_BYTES=2000      # below this much real content, no model call at all (provisional default)
+SKIP_EMPTY=true
 
 # ── Publish ──────────────────────────────────────────────────────────────
-# SITE_DIR: where generated content lives. Default $ROOT_DIR/site.
-# Point it at your existing Vercel-deployed content dir if you prefer, e.g.:
-# SITE_DIR="$HOME/src/html-repo/public/catalog"
-#SITE_DIR="$ROOT_DIR/site"
-
-#REPO_DIR=""                 # auto-detected from SITE_DIR (git toplevel)
-PULL=true                    # git pull --rebase --autostash before publishing
-PUSH=true                    # push after commit (Vercel deploys from the push)
-SKIP_EMPTY=true              # skip run entirely when no new activity
+SITE_DIR=""                  # catalog site/ dir inside a git working copy
+PULL=true
+PUSH=true

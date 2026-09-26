@@ -19,9 +19,9 @@ validate_meta() {
 
   local f
   while IFS= read -r f; do
-    [[ -f "$STAGING/$f" ]] || die "meta references missing file: $f"
-    head -c 512 "$STAGING/$f" | grep -qi '<!doctype html\|<html' || die "not an html doc: $f"
-    if grep -qiE 'src="https?://|href="https?://[^"]*\.(css|js)' "$STAGING/$f"; then
+    [[ -f "$RUN_DIR/$f" ]] || die "meta references missing file: $f"
+    head -c 512 "$RUN_DIR/$f" | grep -qi '<!doctype html\|<html' || die "not an html doc: $f"
+    if grep -qiE 'src="https?://|href="https?://[^"]*\.(css|js)' "$RUN_DIR/$f"; then
       die "external resource in $f — pages must be fully self-contained"
     fi
   done < <(jq -r '.pages[].file' "$meta")
@@ -96,7 +96,7 @@ publish_run() {
   fi
 
   # dedup against manifest + install pages
-  : > "$STAGING/installed-slugs.txt"
+  : > "$RUN_DIR/installed-slugs.txt"
   local slug file
   while IFS=$'\t' read -r slug file; do
     [[ -n "$slug" ]] || continue
@@ -106,19 +106,19 @@ publish_run() {
       continue
     fi
     mkdir -p "$SITE_DIR/pages/$year"
-    cp "$STAGING/$file" "$SITE_DIR/pages/$year/$slug.html"
-    echo "$slug" >> "$STAGING/installed-slugs.txt"
+    cp "$RUN_DIR/$file" "$SITE_DIR/pages/$year/$slug.html"
+    echo "$slug" >> "$RUN_DIR/installed-slugs.txt"
     installed=$((installed + 1))
   done < <(jq -r '.pages[] | [.slug, .file] | @tsv' "$meta")
 
   # meta-final: only installed pages, with catalog path + date stamped
   local keep_json
-  keep_json="$(jq -R . < "$STAGING/installed-slugs.txt" | jq -s .)"
+  keep_json="$(jq -R . < "$RUN_DIR/installed-slugs.txt" | jq -s .)"
   jq --argjson keep "$keep_json" --arg year "$year" --arg date "$RUN_DATE" '
     .pages = (.pages
       | map(select(.slug as $s | $keep | index($s)))
       | map(. + {path: ("pages/" + $year + "/" + .slug + ".html"), date: $date}))
-  ' "$meta" > "$STAGING/meta-final.json"
+  ' "$meta" > "$RUN_DIR/meta-final.json"
 
   # digest (unique name if a same-day run already published one)
   local digest_name="$RUN_DATE"
@@ -126,12 +126,12 @@ publish_run() {
     digest_name="${RUN_DATE}-$(date +%H%M)"
   fi
   local digest_rel="digests/$digest_name.html"
-  write_digest "$STAGING/meta-final.json" "$SITE_DIR/$digest_rel"
+  write_digest "$RUN_DIR/meta-final.json" "$SITE_DIR/$digest_rel"
 
   # manifest merge (atomic: validate the new doc before moving it into place)
   local now
   now="$(date -u +%FT%TZ)"
-  jq --slurpfile m "$STAGING/meta-final.json" \
+  jq --slurpfile m "$RUN_DIR/meta-final.json" \
      --arg now "$now" --arg dpath "$digest_rel" --arg date "$RUN_DATE" '
     .updated = $now
     | .entries += ($m[0].pages | map({
@@ -145,15 +145,13 @@ publish_run() {
         summary: $m[0].digest_summary,
         pages: ($m[0].pages | length)
       }] + .digests)
-  ' "$MANIFEST" > "$STAGING/manifest.new"
-  jq -e . "$STAGING/manifest.new" >/dev/null || die "manifest merge produced invalid JSON"
-  cp "$STAGING/manifest.new" "$MANIFEST"
+  ' "$MANIFEST" > "$RUN_DIR/manifest.new"
+  jq -e . "$RUN_DIR/manifest.new" >/dev/null || die "manifest merge produced invalid JSON"
+  cp "$RUN_DIR/manifest.new" "$MANIFEST"
 
-  # persist watermarks, then commit everything atomically
-  cp "$STAGING/new-watermarks.json" "$WATERMARKS"
-
+  # watermarks are local state now (bug 7) — the caller advances them after this returns
   git -C "$REPO_DIR" add -A "$SITE_DIR" 2>/dev/null || true
-  git -C "$REPO_DIR" add -A "$WATERMARKS" 2>/dev/null || true
+  INSTALLED_PAGES="$installed"
   if git -C "$REPO_DIR" diff --cached --quiet; then
     log "nothing to commit"
     return 0
@@ -163,5 +161,6 @@ publish_run() {
     git -C "$REPO_DIR" push -q 2>/dev/null \
       || log "WARN: push failed — commit is local; next run will retry the push"
   fi
+  INSTALLED_PAGES="$installed"
   log "published: $installed installed, $skipped deduped, digest $digest_rel"
 }
