@@ -27,6 +27,21 @@ now_local_iso() { date +%Y-%m-%dT%H:%M:%S%z; }
 # non-alphanumeric char replaced by '-'>. Verified on 2.1.283 (docs/revival-notes.md).
 encode_project_dir() { printf '%s' "$1" | sed 's/[^A-Za-z0-9]/-/g'; }
 
+# prompt_version [root]: 12-hex content hash of everything that defines what the models are
+# asked (prompts/*.md) and allowed to answer (schemas/*.json), in byte order of file name.
+# Stamped on every ledger row, OTel span and eval golden, so any change in quality or cost
+# can be attributed to an exact prompt revision.
+prompt_version() {
+  local root="${1:-$ROOT_DIR}" f
+  for f in "$root"/prompts/*.md "$root"/schemas/*.json; do
+    [[ -f "$f" ]] || continue
+    printf '== %s ==\n' "${f##*/}"; cat "$f"
+  done | LC_ALL=C hash_stream | cut -c1-12
+}
+hash_stream() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum; else shasum -a 256; fi
+}
+
 # ── claude CLI capability detection ─────────────────────────────────────
 CLAUDE_HELP=""
 claude_supports() {
@@ -174,10 +189,12 @@ ledger_append() {
     --argjson drops "${POSTSCAN_DROPS:-0}" \
     --argjson vdrops "${VALIDATOR_DROPS:-0}" \
     --argjson ndrops "${NEAR_DUP_DROPS:-0}" \
+    --arg pv "${PROMPT_VERSION:-}" \
     --arg sbskip "${STAGE_B_SKIP:-}" \
     --argjson dry "$([[ "${DRY_RUN:-false}" == "true" ]] && echo true || echo false)" '
     {
       ts: $ts, repo: "loopwatch", target: $target,
+      prompt_version: (if $pv == "" then null else $pv end),
       model: ((map(.model) | unique | join("+")) | if . == "" then null else . end),
       in:      (map(.in)       | add // 0),
       cached:  (map(.cached)   | add // 0),

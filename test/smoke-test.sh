@@ -783,5 +783,23 @@ jq -e '.status == "failed" and .skipped_reason == "claude_error" and .attempts =
 jq -e '.files | length == 0' "$LW_STATE/watermarks.json" >/dev/null 2>&1 || [[ ! -f "$LW_STATE/watermarks.json" ]] || fail "watermarks advanced"
 ok "gave up after 2 attempts, failed closed, watermarks held"
 
+# ═════════════════════════════════════════════════════════════════════════
+setup "prompt provenance: prompt_version on ledger + spans; eval refuses a stale golden"
+conf "OTEL_EXPORT_DIR=\"$W/otel\""
+lw --dry-run
+pv="$(ledger_last | jq -r .prompt_version)"
+[[ "$pv" =~ ^[0-9a-f]{12}$ ]] || fail "ledger prompt_version missing: $pv"
+[[ "$pv" == "$(cat "$SRC_ROOT/test/eval/fixtures/day1/recorded/PROMPT_VERSION")" ]] || fail "repo prompts drifted from the eval golden ($pv)"
+jq -e --arg pv "$pv" '[.resourceSpans[0].scopeSpans[0].spans[].attributes[] | select(.key == "loopwatch.prompt_version") | .value.stringValue] | length == 3 and all(. == $pv)' "$W"/otel/*.otlp.json >/dev/null \
+  || fail "every span must carry prompt_version"
+# a one-line prompt edit must change the version and make the offline eval refuse the old golden
+mkdir -p "$W/src"; cp -R "$SRC_ROOT/bin" "$SRC_ROOT/lib" "$SRC_ROOT/prompts" "$SRC_ROOT/schemas" "$SRC_ROOT/site" "$SRC_ROOT/test" "$SRC_ROOT/VERSION" "$W/src/"
+echo "Prefer shorter pages." >> "$W/src/prompts/extract.md"
+pv2="$(bash -c "source '$W/src/lib/common.sh'; prompt_version '$W/src'")"
+[[ "$pv2" != "$pv" && "$pv2" =~ ^[0-9a-f]{12}$ ]] || fail "prompt edit did not change prompt_version"
+if (HOME="$W/evalhome" "$LW_BASH" "$W/src/test/eval/run-eval.sh" > "$W/eval.txt" 2>&1); then fail "offline eval must fail on a stale golden"; fi
+grep -q "prompts/schemas changed (prompt_version $pv2) but the golden was recorded under $pv" "$W/eval.txt" || fail "eval message: $(head -3 "$W/eval.txt")"
+ok "prompt_version $pv on ledger + all spans; a prompt edit -> $pv2 and the offline eval refuses the stale golden"
+
 echo
 echo "PASS — $N_CASES cases green"

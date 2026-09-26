@@ -54,6 +54,7 @@ otel_payload() {  # otel_payload <ledger-row-json> <usage-file>  -> OTLP/JSON on
               status: (if $row.status == "failed" then {code: 2, message: ($row.skipped_reason // "failed")} else {code: 1} end),
               attributes: ({
                 "loopwatch.run_id": $row.run_id, "loopwatch.status": $row.status,
+                "loopwatch.prompt_version": $row.prompt_version,
                 "loopwatch.dry_run": $row.dry_run, "loopwatch.pages": $row.pages,
                 "loopwatch.skipped_reason": $row.skipped_reason,
                 "loopwatch.stage_b_skipped": $row.stage_b_skipped,
@@ -79,6 +80,8 @@ otel_payload() {  # otel_payload <ledger-row-json> <usage-file>  -> OTLP/JSON on
                      "gen_ai.usage.cache_read.input_tokens": ($s.cached // 0),
                      "error.type": (if $s.is_error then ($s.subtype // "error") else null end),
                      "loopwatch.stage": $s.stage,
+                     "loopwatch.prompt_version": $row.prompt_version,
+                     "loopwatch.attempt": ($s.attempt // 1),
                      "loopwatch.cost_usd": ($s.cost_usd // 0)
                    } | attrs)} ]
           )}]}]}' "$usage"

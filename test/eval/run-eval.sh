@@ -10,6 +10,12 @@
 #                                    real models. Reports pages/cost/latency against the golden run and
 #                                    fails if quality collapses (0 pages) or cost exceeds 2x golden.
 #                                    Use it before merging prompt or schema changes.
+#   test/eval/run-eval.sh --record   LIVE run that then REPLACES the golden (recorded outputs,
+#                                    bundle and PROMPT_VERSION). Use after a --live run you accept.
+#
+# Provenance: recorded/PROMPT_VERSION is the prompt_version (hash of prompts + schemas) the
+# golden was recorded under. Offline mode fails when they drift, so a prompt edit can't pass CI
+# on a golden that no longer describes it.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -39,7 +45,7 @@ git -C "$W/seed" -c user.name=eval -c user.email=eval@test commit -qm seed
 git -C "$W/seed" push -q "$BARE" HEAD:refs/heads/main
 export STUB_GH_REMOTE="$BARE" STUB_GH_STATE="$W/gh" STUB_GH_CALLS="$W/gh-calls.log"; mkdir -p "$W/gh"
 
-if [[ "$MODE" == "--live" ]]; then
+if [[ "$MODE" == "--live" || "$MODE" == "--record" ]]; then
   CLAUDE_BIN="$(command -v claude)" || fail "claude CLI not found"
 else
   CLAUDE_BIN="$HERE/replay-claude"
@@ -68,7 +74,15 @@ RUN="$STATE/run"
 GOLD_COST="$(jq -s 'map(.total_cost_usd) | add' "$FIX/recorded/triage.json" "$FIX/recorded/extract.json")"
 GOLD_PAGES="$(jq '.structured_output.pages | length' "$FIX/recorded/extract.json")"
 
-if [[ "$MODE" != "--live" ]]; then
+PV_NOW="$(bash -c "ROOT_DIR='$SRC_ROOT'; source '$SRC_ROOT/lib/common.sh'; prompt_version '$SRC_ROOT'")"
+PV_GOLD="$(cat "$FIX/recorded/PROMPT_VERSION" 2>/dev/null || echo none)"
+[[ "$(jq -r '.prompt_version' <<< "$L")" == "$PV_NOW" ]] || fail "ledger prompt_version $(jq -r .prompt_version <<< "$L") != $PV_NOW"
+
+if [[ "$MODE" == "offline" ]]; then
+  [[ "$PV_NOW" == "$PV_GOLD" ]] || fail "prompts/schemas changed (prompt_version $PV_NOW) but the golden was recorded under $PV_GOLD.
+    Check the change with:  test/eval/run-eval.sh --live
+    then accept it with:    test/eval/run-eval.sh --record"
+  ok "golden recorded under the current prompt_version ($PV_NOW)"
   cmp -s "$RUN/bundle/transcripts/claude-code-1.txt" "$FIX/recorded/bundle-1.txt" || fail "collector no longer rebuilds bundle-1 byte-for-byte (filter/scrub regression): $(diff "$RUN/bundle/transcripts/claude-code-1.txt" "$FIX/recorded/bundle-1.txt" | head -5)"
   cmp -s "$RUN/bundle/transcripts/claude-code-2.txt" "$FIX/recorded/bundle-2.txt" || fail "collector no longer rebuilds bundle-2 byte-for-byte"
   ok "collector rebuilds the recorded bundle byte-for-byte"
@@ -92,11 +106,22 @@ if [[ "$MODE" != "--live" ]]; then
   ok "3 golden pages rendered and validator-clean; 0 drops; digest identical; ledger cost \$$GOLD_COST exact"
   echo "PASS — offline eval"
 else
+  echo "  prompt_version: $PV_NOW (golden: $PV_GOLD)"
   pages="$(jq '.pages' <<< "$L")"; cost="$(jq '.cost_usd' <<< "$L")"
   printf '  live: %s page(s), $%s, %ss   |   golden: %s page(s), $%s\n' "$pages" "$cost" "$secs" "$GOLD_PAGES" "$GOLD_COST"
   jq -r '.pages[] | "    - [\(.category)] \(.title)"' "$RUN/run-meta.json"
   [[ "$pages" -ge 1 ]] || fail "quality collapse: 0 pages on a day that produced $GOLD_PAGES"
   jq -e --argjson c "$GOLD_COST" '.cost_usd <= 2 * $c' <<< "$L" >/dev/null || fail "cost regression: \$$cost > 2x golden \$$GOLD_COST"
   jq -e '.validator_drops == 0 and .postscan_drops == 0' <<< "$L" >/dev/null || echo "  WARN: live run had drops: $(jq -c '{validator_drops, postscan_drops}' <<< "$L")"
+  if [[ "$MODE" == "--record" ]]; then
+    for st in triage extract; do
+      jq '{type, subtype, is_error, duration_ms, num_turns, result, structured_output, total_cost_usd, usage}
+          | with_entries(select(.value != null))' "$RUN/$st.json" > "$FIX/recorded/$st.json"
+    done
+    cp "$RUN/bundle/transcripts/claude-code-1.txt" "$FIX/recorded/bundle-1.txt"
+    cp "$RUN/bundle/transcripts/claude-code-2.txt" "$FIX/recorded/bundle-2.txt"
+    echo "$PV_NOW" > "$FIX/recorded/PROMPT_VERSION"
+    echo "  recorded new golden under prompt_version $PV_NOW (review the diff in test/eval/fixtures before committing)"
+  fi
   echo "PASS — live eval"
 fi

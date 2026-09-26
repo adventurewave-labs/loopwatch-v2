@@ -93,6 +93,7 @@ LOG="$STATE_DIR/logs/$RUN_TS.log"
 source "$ROOT_DIR/lib/common.sh"
 # shellcheck disable=SC1091
 source "$ROOT_DIR/lib/otel.sh"
+PROMPT_VERSION="$(prompt_version "$ROOT_DIR")"
 
 # dependency preflight
 for dep in jq git; do
