@@ -1,7 +1,25 @@
 #!/usr/bin/env bash
 # loopwatch lib — shared helpers (sourced; do not execute). bash 3.2 + BSD/GNU userland safe.
 
-log() { printf '%s %s\n' "$(date +%T)" "$*" | tee -a "${LOG:-/dev/null}" >&2; }
+# log: human line "HH:MM:SS msg" to stderr and $LOG (unchanged), plus one structured JSON line
+# per event to $LOG_JSONL when set: {ts (UTC), t (epoch s), level, run_id, trace_id, msg}.
+# Level comes from the prefix: "FATAL: " = error, "WARN: " = warn, else info. trace_id is the
+# run's OTel trace, so log lines and spans correlate. LOG_FORMAT=json puts JSON on stderr too.
+log() {
+  local line level=info msg="$*"
+  case "$msg" in "FATAL: "*) level=error; msg="${msg#FATAL: }" ;; "WARN: "*) level=warn; msg="${msg#WARN: }" ;; esac
+  line="$(date +%T) $*"
+  printf '%s\n' "$line" >> "${LOG:-/dev/null}"
+  if [[ -n "${LOG_JSONL:-}" || "${LOG_FORMAT:-text}" == json ]]; then
+    local j
+    j="$(jq -nc --arg l "$level" --arg m "$msg" --arg r "${RUN_TS:-}" --arg tr "${RUN_TRACE_ID:-}" \
+          '{ts: (now | strftime("%Y-%m-%dT%H:%M:%SZ")), t: (now * 1000 | floor / 1000), level: $l, run_id: $r}
+           + (if $tr == "" then {} else {trace_id: $tr} end) + {msg: $m}' 2>/dev/null || true)"
+    [[ -z "${LOG_JSONL:-}" || -z "$j" ]] || printf '%s\n' "$j" >> "$LOG_JSONL"
+    if [[ "${LOG_FORMAT:-text}" == json && -n "$j" ]]; then printf '%s\n' "$j" >&2; return 0; fi
+  fi
+  printf '%s\n' "$line" >&2
+}
 
 # sha256 of a string, first 16 hex chars — used for state keys so absolute
 # paths (which can carry client project names) never land in state files.

@@ -657,7 +657,8 @@ setup "OpenTelemetry GenAI export: OTLP/JSON trace per run, file + collector, no
 mkdir -p "$W/bin"
 cat > "$W/bin/curl" <<'EOF2'
 #!/usr/bin/env bash
-printf '%s\n' "$@" > "$OTEL_CURL_ARGS"; cat > "$OTEL_CURL_BODY"
+sfx=""; case "${*: -1}" in */v1/logs) sfx=".logs" ;; esac   # one file set per OTLP signal
+printf '%s\n' "$@" > "$OTEL_CURL_ARGS$sfx"; cat > "$OTEL_CURL_BODY$sfx"
 prev=""; for a in "$@"; do
   if [[ "$prev" == "-H" && "$a" == @* ]]; then cat "${a#@}" > "$OTEL_CURL_HDRS"; stat -c %a "${a#@}" 2>/dev/null > "$OTEL_CURL_HDRS.mode" || stat -f %Lp "${a#@}" > "$OTEL_CURL_HDRS.mode"; fi
   prev="$a"; done
@@ -671,6 +672,7 @@ OTEL_EXPORTER_OTLP_ENDPOINT="http://ambient.test:4318" OTEL_EXPORT_DIR="$W/ambie
 conf "OTEL_EXPORT_DIR=\"$W/otel\""
 conf 'OTEL_EXPORTER_OTLP_ENDPOINT="http://collector.test:4318/"'
 conf 'OTEL_EXPORTER_OTLP_HEADERS="x-api-key=k123, authorization = Basic%20dXNlcjpzZWNyZXQ=,x-team=lw"'
+sleep 1   # run ids have 1 s resolution: keep this run's log file its own
 echo '{"type":"user","cwd":"/Users/dev/src/turbo-flow","message":{"role":"user","content":"OTEL-CONTENT-MARKER decided to shard the ingest queue by tenant because hot tenants starved the rest; tradeoff is more consumers."}}' >> "$TX"
 PATH="$W/bin:$PATH" lw --dry-run
 run_id="$(ledger_last | jq -r .run_id)"
@@ -701,7 +703,22 @@ grep -qx "x-team: lw" "$OTEL_CURL_HDRS" || fail "OTLP header 3 (last in the list
 [[ "$(cat "$OTEL_CURL_HDRS.mode")" == 600 ]] || fail "header file must be 0600"
 if ls "${TMPDIR:-/tmp}"/loopwatch-otel.* >/dev/null 2>&1; then fail "header file left behind"; fi
 cmp -s <(jq -c . "$F") <(jq -c . "$OTEL_CURL_BODY") || fail "collector got a different payload"
-ok "3 spans, gen_ai.* usage, file and collector agree, no content; ambient env ignored; headers via 0600 file (not argv), trimmed + percent-decoded"
+# structured logs (backlog #29): JSON lines with level, run_id and the run's trace id, also
+# exported as OTLP logs linked to the trace
+J="$LW_STATE/logs/$run_id.jsonl"
+[[ -s "$J" ]] || fail "no structured log for run $run_id"
+jq -se --arg r "$run_id" --arg tr "$(jq -r '.resourceSpans[0].scopeSpans[0].spans[0].traceId' "$F")" '
+  all(.[]; (.ts | test("Z$")) and (.t | type == "number") and (.level | IN("info","warn","error")) and .run_id == $r and .trace_id == $tr and (.msg | type == "string"))
+  and (map(.msg) | any(test("collecting deltas")))' "$J" >/dev/null || fail "structured log lines: $(head -2 "$J")"
+L="$W/otel/$run_id.otlp-logs.json"
+jq -e --arg tr "$(jq -r '.resourceSpans[0].scopeSpans[0].spans[0].traceId' "$F")" --arg sp "$(jq -r '.resourceSpans[0].scopeSpans[0].spans[0].spanId' "$F")" --argjson n "$(wc -l < "$J")" '
+  .resourceLogs[0].scopeLogs[0].logRecords as $r
+  | ($r | length) > 0 and ($r | length) <= $n and all($r[]; .traceId == $tr and .spanId == $sp and (.timeUnixNano | test("^[0-9]{19}$")) and .severityNumber >= 9)' "$L" >/dev/null \
+  || fail "OTLP logs: $(jq -c '.resourceLogs[0].scopeLogs[0].logRecords[0]' "$L" 2>&1)"
+grep -qx "http://collector.test:4318/v1/logs" "$OTEL_CURL_ARGS.logs" || fail "logs not POSTed to /v1/logs"
+cmp -s <(jq -c . "$L") <(jq -c . "$OTEL_CURL_BODY.logs") || fail "collector got different logs"
+if grep -q "OTEL-CONTENT-MARKER\|shard the ingest" "$J" "$L"; then fail "transcript content leaked into logs"; fi
+ok "3 spans, gen_ai.* usage, file and collector agree, no content; ambient env ignored; headers via 0600 file (not argv), trimmed + percent-decoded; JSON logs carry run_id + trace_id and export as OTLP logs on the same trace"
 
 rm -rf "$W/otel"
 echo '{"type":"user","cwd":"/Users/dev/src/turbo-flow","message":{"role":"user","content":"second delta so the run is not skipped: pinned the batch pool to spot with a PDB of 1 because evictions stalled ingest."}}' >> "$TX"
@@ -714,6 +731,7 @@ jq -e '.resourceSpans[0].scopeSpans[0].spans | .[0].status.code == 2 and .[1].st
        and (.[1].attributes | map(select(.key == "error.type")) | length == 1)' "$F" >/dev/null \
   || fail "a failed run must export error status: $(jq -c '.resourceSpans[0].scopeSpans[0].spans | map({name, status})' "$F")"
 grep -q "WARN: OTLP export to collector returned 503" "$LWLOG" || fail "collector failure should warn"
+jq -se 'any(.[]; .level == "error") and any(.[]; .level == "warn")' "$(ls -t "$LW_STATE"/logs/*.jsonl | head -1)" >/dev/null || fail "FATAL/WARN lines must log as error/warn"
 [[ "$(ledger_last | jq -r .status)" == failed ]] || fail "collector failure must not change the run outcome"
 ok "failed run exports error status; collector 503 only warns"
 

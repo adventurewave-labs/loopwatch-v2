@@ -95,11 +95,14 @@ RUN_DIR="$STATE_DIR/run"
 LEDGER="${LEDGER:-$STATE_DIR/runs.jsonl}"
 mkdir -p "$STATE_DIR/logs" "$STATE_DIR/failed"
 LOG="$STATE_DIR/logs/$RUN_TS.log"
+LOG_JSONL="$STATE_DIR/logs/$RUN_TS.jsonl"
 
 # shellcheck disable=SC1091
 source "$ROOT_DIR/lib/common.sh"
 # shellcheck disable=SC1091
 source "$ROOT_DIR/lib/otel.sh"
+# one trace per run: OTel spans and every structured log line (LOG_JSONL) carry these ids
+RUN_TRACE_ID="$(otel_hex 16)"; RUN_ROOT_SPAN="$(otel_hex 8)"
 PROMPT_VERSION="$(prompt_version "$ROOT_DIR")"
 
 # dependency preflight
