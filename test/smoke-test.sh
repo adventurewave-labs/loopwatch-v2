@@ -953,5 +953,10 @@ else
   ok "node not installed — skipped"
 fi
 
+# ═════════════════════════════════════════════════════════════════════════
+setup "scrubber coverage: gitleaks-style samples for 53 secret kinds, 0 false positives"
+bash "$SRC_ROOT/test/scrub/run-coverage.sh" > "$W/cov.txt" 2>&1 || fail "$(cat "$W/cov.txt")"
+ok "$(grep 'scrubber coverage' "$W/cov.txt" | sed 's/^ *//')"
+
 echo
 echo "PASS — $N_CASES cases green"
