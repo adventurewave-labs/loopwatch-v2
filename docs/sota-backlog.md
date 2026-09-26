@@ -69,6 +69,11 @@ Cost: no model tokens | **done** (loop 2, round 4) |
   - $19.50 spent clamps the writer's budget to $0.47;
   - $0.15 against a $0.02 median is flagged in the ledger, the PR body and `loopwatch ledger`.
 | **done** (loop 2, round 8) |
-| 18 | **Catalog search upgrade** (was #7) | Better recall three months later | todo |
+| 18 | **Catalog search upgrade** (was #7) | Better recall three months later. **Shipped:**
+- **Ranking.** `site/search.js` is dependency-free and served as an external script, so it works under the catalog's `script-src 'self'` CSP. It uses **BM25F** over title (weight 3), tags (2.5), category (1.5) and summary (1); every term must match; the term being typed matches by prefix at 0.6 weight; ties go to the newest page.
+- **Highlights and keyboard.** Matches get `<mark>` highlights built on raw text and escaped piece by piece, so markup in a title stays inert. Arrow keys and Enter open a result, alongside the existing `/` to focus and Esc to clear.
+- **Tests:** 12 unit assertions (field weighting, AND, prefix, folding, tie order, XSS-safe highlights), and a 2,000-entry index plus query in **33 ms**. `test/site-e2e.cjs` drives Chromium against the **real catalog server and CSP**: ranked results, highlights, keyboard navigation, no CSP violations, and a title's `<img onerror>` never runs.
+- **Deployed catalog:** also shipped to the catalog repo (loopwatch-catalog PR #1), because loopwatch runs don't sync UI assets.
+| **done** (loop 2, round 9) |
 | 19 | **Secret-scrub coverage parity.** Test the scrubber against the positive samples of common gitleaks rules (AWS, GCP, GitHub fine-grained, Slack, Stripe, JWT, private keys, OpenAI/Anthropic keys) and close the gaps | Measured coverage instead of a hand-curated pattern list | todo |
 | 20 | **Prompt-caching measurement** (was #8, live and cheap) | Only if the numbers justify it | todo |

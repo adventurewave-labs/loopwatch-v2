@@ -943,5 +943,15 @@ jq -e '.cost_anomaly == false or .cost_anomaly == true' <(ledger_last) >/dev/nul
 bash "$SRC_ROOT/bin/loopwatch" ledger 3 | grep -q "cost anomalies: 1" || fail "loopwatch ledger should count anomalies: $(bash "$SRC_ROOT/bin/loopwatch" ledger 3 | tail -1)"
 ok "\$0.15 vs median \$0.02: cost_anomaly in ledger, note in the PR body, counted by 'loopwatch ledger'"
 
+# ═════════════════════════════════════════════════════════════════════════
+setup "catalog search: ranked BM25F, prefix, highlight-safe (node unit tests)"
+if command -v node >/dev/null 2>&1; then
+  node "$SRC_ROOT/test/site-search.test.cjs" > "$W/search.txt" 2>&1 || fail "$(cat "$W/search.txt")"
+  grep -q '<script src="search.js" defer></script>' "$SRC_ROOT/site/index.html" || fail "index.html must load search.js (CSP: script-src 'self')"
+  ok "$(cat "$W/search.txt")"
+else
+  ok "node not installed — skipped"
+fi
+
 echo
 echo "PASS — $N_CASES cases green"
