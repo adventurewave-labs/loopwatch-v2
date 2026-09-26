@@ -5,7 +5,7 @@ Turns the day's Claude Code, Cowork and GitHub activity into a **private, search
 ```
 ~/.claude/projects/*/*.jsonl ┐  allowlist (INCLUDE_PROJECTS) · self-exclusion · byte watermarks
 Cowork session *.jsonl       ├─ filter (text + compact [tool:X] lines) · scrub secrets + redact.list
-GitHub API (commits, PRs)    ┘  timestamp watermark · no local clones
+GitHub API (commits, PRs)    ┘  your commits + merged PRs · catalog repo excluded · no local clones
                                         │  MAX_BUNDLE_KB cap, oldest trimmed first
                                         ▼  (below ACTIVITY_MIN_BYTES: stop — zero model calls)
                  Stage A  triage   haiku, read-only  → digest + 0..5 candidates with line-range evidence
@@ -14,7 +14,7 @@ GitHub API (commits, PRs)    ┘  timestamp watermark · no local clones
                                         ▼
                  validator (no script/handlers/embeds/external loads) → post-scan (secrets + redact.list)
                                         ▼
-                 catalog repo: commit on loopwatch/<date> → gh pr create → protected Vercel preview → you merge
+                 catalog repo: loopwatch/<date>-<time> branch (or the open PR) → gh pr create → protected Vercel preview → you merge
                                         ▼
                  ledger row (~/.local/state/loopwatch/runs.jsonl): tokens, cost, pages, skip reason
 ```
@@ -61,22 +61,30 @@ Measured on claude 2.1.283 (dry runs, not a monthly average): a no-page day cost
 
 ## Privacy is enforced, not advised
 
-- **Allowlist.** Only project dirs matching `INCLUDE_PROJECTS` are read, and an empty list reads nothing. Patterns match the dir name (`*-src-turbo-flow`) or `label:dir` (`cowork:*`). `EXCLUDE_PROJECTS` wins.
+- **Allowlist.** Only sources matching `INCLUDE_PROJECTS` are read, and an empty list reads nothing, GitHub included. Patterns match the dir name (`*-src-turbo-flow`) or `label:name` (`cowork:*`, `github:marcuspat/*`). `EXCLUDE_PROJECTS` wins. The catalog repo is always excluded from GitHub collection, so loopwatch never re-reads its own output.
+- **Model isolation.** Headless calls get `--disallowedTools` rules that deny Read/Grep/Glob on `~/.claude`, `~/Library`, `~/.config` (your `redact.list`), `~/.ssh`/`.aws`/`.gnupg`, and loopwatch's private state (the redaction rules, the held bundle, autopsies, logs). This matters because Claude Code's Read reaches outside the working directory; path deny rules were verified to block Read, Grep and Glob on 2.1.283.
 - **Scrub before the model.** Built-in patterns cover OpenAI/Anthropic `sk-` keys, Stripe `sk_/rk_/pk_ live/test`, GitHub tokens, AWS, Slack, Google `AIza`, JWTs, PEM headers, bearer tokens, `scheme://user:pass@` connection strings, `password=`/`token:`/`api_key=` assignments, and emails. On top of those, every line of your gitignored `redact.list` is applied, case-insensitive, with an optional `=>replacement`.
 - **Scan after the model.** Pages, titles, summaries, tags, slugs and the digest are re-scanned with the same rules. Any hit drops the page, or withholds the digest text. The drop is counted in the ledger without the matched text.
-- **Page firewall.** The validator drops any page with `<script`, `on*=` handlers, `iframe/object/embed/form/link/base`, meta refresh, or an external or `javascript:` `src`/`href`/`srcset`/`url()`/`@import`, in either quote style.
+- **Page firewall.** The validator reads real tags (a quoted `>` does not end a tag), decodes character references, and strips tab/CR/LF before matching. It drops any page with `<script`, `on*=` handlers, `iframe/object/embed/form/link/base/svg/math`, `<meta http-equiv>`, an external/`javascript:`/`data:` (non-image) URL in `src`/`href`/`srcset`/`action`/`poster`/…, or any CSS `url()`/`@import`/`expression()`. The catalog's CSP (`script-src 'self'`) is a second layer.
 - **Private catalog.** A publishing run refuses to start unless `SITE_VISIBILITY=protected`. If `VERCEL_PROJECT_ID` is set and `VERCEL_TOKEN` is in the environment, preflight also confirms Deployment Protection live through the Vercel API. The catalog repo's `vercel.json` adds a strict CSP (`script-src 'self'`) and `noindex`.
 - **No paths in state.** Watermark keys are sha256 hashes, and state lives in `~/.local/state/loopwatch`. Nothing from state is committed anywhere.
 
 ## Publishing model
 
-The catalog is a separate private repo (`CATALOG_REPO`, default `adventurewave-labs/loopwatch-catalog`) holding `site/` only. loopwatch keeps a tool-managed clone under `~/.local/state/loopwatch/catalog`. Each run commits to `loopwatch/<date>` and opens a PR. While a loopwatch PR is open, later runs add commits to it, so there is only ever one open PR and `manifest.json` never conflicts. loopwatch refuses to push anything except `loopwatch/*` branches. Watermarks advance only after the push lands. Closing a PR discards that content, which is not re-mined.
+The catalog is a separate private repo (`CATALOG_REPO`, default `adventurewave-labs/loopwatch-catalog`) holding `site/` only. loopwatch keeps a tool-managed clone under `~/.local/state/loopwatch/catalog`.
+
+- **Branches and PRs.** A run with no open loopwatch PR starts a fresh `loopwatch/<date>-<time>` branch from `main` and opens a PR. While a loopwatch PR is open, later runs add commits to it, so there is at most one open PR and `manifest.json` never conflicts. If `gh` can't say whether a PR is open, the run fails rather than risk a second one.
+- **Closing a PR discards it.** A closed PR's branch is never reused, so its content is not re-proposed and not re-mined.
+- **Push safety.** loopwatch refuses to push anything except `loopwatch/*` branches. Watermarks advance only after the push lands.
 
 ## Correctness
 
 - Transcripts are watermarked by byte offset. The watermark stops at the **last newline**, so a session still being written never loses its tail. A file that shrank is re-read from 0. The first sighting of a file only mines it if it was touched in the last `FIRST_RUN_LOOKBACK_HOURS` (48).
 - **No self-ingestion.** Headless calls use `--no-session-persistence` and always run from `~/.local/state/loopwatch/run`. That project dir, and v0.1's `loopwatch-XXXXXX` temp dirs, are excluded, and lines whose `cwd` is the run dir are dropped. See `docs/revival-notes.md` for the experiment that confirmed the bug.
-- A mkdir lock serializes runs. Any failure leaves an autopsy (the whole run dir) in `~/.local/state/loopwatch/failed/`, keeping the last 5.
+- A mkdir lock serializes runs. It records its PID, and a lock whose process is gone (or older than `LOCK_STALE_HOURS`) is reclaimed, so a crash can't silently stop later runs. A run that finds a live lock writes a `skipped_reason: locked` ledger row.
+- A result the CLI flags as an error (`is_error: true`) fails the run, even when `claude` exits 0.
+- Transcript lines are parsed one at a time, so a malformed line is skipped without losing the rest.
+- Any failure leaves an autopsy (the whole run dir) in `~/.local/state/loopwatch/failed/`, keeping the last 5.
 
 ## Seams
 
@@ -103,7 +111,7 @@ prompts/triage.md        Stage A: the value bar and candidate contract
 prompts/extract.md       Stage B: page contract
 site/                    catalog UI seed (index.html, app.js, manifest.json)
 catalog-template/        vercel.json (CSP), catalog-check CI, README for the catalog repo
-test/smoke-test.sh       27 sandboxed end-to-end cases, stubbed claude + gh
+test/smoke-test.sh       36 sandboxed end-to-end cases, stubbed claude + gh
 docs/                    PRD-v0.2, revival notes, manifest schema, v0.1 PRD
 ```
 
@@ -113,7 +121,7 @@ docs/                    PRD-v0.2, revival notes, manifest schema, v0.1 PRD
 test/smoke-test.sh   # no network, no real model, no real transcripts, ~30s
 ```
 
-CI runs the smoke suite on ubuntu and macOS (BSD userland, stock bash 3.2), plus `shellcheck -S error`, on every push and PR and weekly. `bin/ship.sh [patch|minor|major]` runs the tests, bumps `VERSION`, tags, and pushes. `release.yml` gates the GitHub release on the same suite.
+CI runs the smoke suite on ubuntu, and on macOS under `/bin/bash`. That is stock 3.2.57, the same bash launchd uses, with the BSD userland. It also runs `shellcheck -S error`. CI runs on every push and PR, and weekly. `bin/ship.sh [patch|minor|major]` runs the tests, bumps `VERSION`, tags, and pushes. `release.yml` gates the GitHub release on the same suite.
 
 ## Not in v0.2
 

@@ -21,8 +21,9 @@ Inputs are pre-scrubbed: secrets and client/entity names are replaced with `[RED
 
 The catalog is private (behind Vercel Deployment Protection), but write every page as if it could be shared. A validating publisher re-scans your output and **drops any page** that:
 
-- contains `<script>`, any `on…=` event handler, `<iframe>`, `<object>`, `<embed>`, `<form>`, `<link>` or `<base>`
-- has an `src`/`href`/`url(…)` pointing to `http:`, `https:`, `//` or `javascript:`. **Write URLs as plain text in `<code>`, not as links.**
+- contains `<script>`, any `on…=` event handler attribute, `<iframe>`, `<object>`, `<embed>`, `<form>`, `<link>`, `<base>`, `<svg>`, `<math>` or `<meta http-equiv>`
+- has an `src`/`href` (or similar) pointing to `http:`, `https:`, `//` or `javascript:`, however it is encoded. **Write URLs as plain text in `<code>`, not as links.** In-page anchors (`#…`) and relative links are fine.
+- uses CSS `url(…)`, `@import` or `expression(…)` anywhere. Style with the skeleton's inline CSS only.
 - matches a secret pattern or a redaction-list term anywhere, in the HTML, title, summary, tags or slug
 
 ## Output contract (write exactly this, nothing else)

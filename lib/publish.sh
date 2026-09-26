@@ -13,8 +13,8 @@ validate_meta() {
   tmp="$RUN_DIR/.validate.tmp"
   : > "$RUN_DIR/.invalid.txt"
   while IFS= read -r row; do
-    slug="$(jq -r '.slug // ""' <<< "$row")"
-    file="$(jq -r '.file // ""' <<< "$row")"
+    slug="$(jq -r 'if type == "object" then (.slug // "" | tostring) else "" end' <<< "$row")"
+    file="$(jq -r 'if type == "object" then (.file // "" | tostring) else "" end' <<< "$row")"
     reason="$(page_problem "$row")"
     if [[ -n "$reason" ]]; then
       log "validator: dropped page ${slug:-<no slug>}: $reason"
@@ -25,33 +25,54 @@ validate_meta() {
   done < <(jq -c '.pages[]' "$meta")
   jq --rawfile bad "$RUN_DIR/.invalid.txt" '
     ($bad | split("\n") | map(select(. != ""))) as $b
-    | .pages = ([.pages[] | select((.slug // "") as $s | $b | index($s) | not)]
+    | .pages = ([.pages[] | select(type == "object" and ((.slug // "") | type == "string"))
+                           | select((.slug // "") as $s | $b | index($s) | not)]
                 | unique_by(.slug))' "$meta" > "$tmp" && mv "$tmp" "$meta"
 }
 
 # page_problem <page-json>: prints why a page must be dropped, or nothing
 page_problem() {
-  local row="$1" file flat
-  jq -e '
+  local row="$1" file
+  jq -e 'type == "object" and
       (.slug     | type == "string" and test("^[a-z0-9][a-z0-9-]{2,79}$")) and
       (.title    | type == "string" and length > 0 and length < 200) and
       (.category | type == "string" and test("^[a-z0-9-]+(/[a-z0-9-]+)?$")) and
       (.summary  | type == "string" and length > 0) and
-      (.file     | type == "string" and test("^pages/[a-z0-9][a-z0-9-]{2,79}\\.html$"))' <<< "$row" >/dev/null \
+      ((.tags // []) | type == "array") and
+      (.file     | type == "string" and test("^pages/[a-z0-9][a-z0-9-]{2,79}\\.html$"))' <<< "$row" >/dev/null 2>&1 \
     || { echo "schema"; return; }
   file="$RUN_DIR/$(jq -r '.file' <<< "$row")"
   [[ -f "$file" ]] || { echo "missing file"; return; }
   head -c 512 "$file" | grep -qi '<!doctype html\|<html' || { echo "not an html doc"; return; }
-  # flatten newlines so multi-line tags are checked as one unit
-  flat="$(tr '\n\r' '  ' < "$file")"
-  if printf '%s' "$flat" | grep -qiE '<script'; then echo "inline or external <script>"; return; fi
-  if printf '%s' "$flat" | grep -qiE '<[^>]*[[:space:]/]on[a-z]+[[:space:]]*='; then echo "on* event handler"; return; fi
-  if printf '%s' "$flat" | grep -qiE '<(iframe|object|embed|frame|frameset|applet|base|form|link|portal)[[:space:]>/]'; then echo "embedding/linking element"; return; fi
-  if printf '%s' "$flat" | grep -qiE '<meta[^>]*http-equiv'; then echo "meta http-equiv"; return; fi
-  if printf '%s' "$flat" | grep -qiE '<[^>]*[[:space:]](src|href|srcset|action|formaction|poster|data|background|xlink:href)[[:space:]]*=[[:space:]]*["'"'"']?[[:space:]]*(https?:|//|javascript:|vbscript:|data:text)'; then
-    echo "external or scriptable URL in an attribute"; return
-  fi
-  if printf '%s' "$flat" | grep -qiE 'url\([[:space:]]*["'"'"']?[[:space:]]*(https?:|//)|@import'; then echo "external CSS resource"; return; fi
+  html_problem "$file"
+}
+
+# html_problem <file>: the markup firewall (R-11). Works on real tags only (a quoted '>'
+# inside an attribute does not end the tag), decodes character references and strips
+# the tab/newline/NUL characters browsers ignore inside URLs before matching, so
+# entity-encoded or whitespace-split schemes are caught too.
+html_problem() {
+  jq -Rrs '
+    def hexval: ascii_downcase | explode | reduce .[] as $c (0; . * 16 + (if $c >= 97 then $c - 87 else $c - 48 end));
+    def decode:
+      gsub("&#[xX](?<h>[0-9a-fA-F]{1,6});?"; (.h | hexval | [.] | implode))
+      | gsub("&#(?<d>[0-9]{1,7});?"; (.d | tonumber | [.] | implode))
+      | gsub("&(?i:colon);"; ":") | gsub("&(?i:sol);"; "/") | gsub("&(?i:tab);"; "\t") | gsub("&(?i:newline);"; "\n")
+      | gsub("&(?i:lpar);"; "(") | gsub("&(?i:rpar);"; ")") | gsub("&(?i:period);"; ".") | gsub("&(?i:bsol);"; "\\\\")
+      | gsub("&(?i:quot);"; "\"") | gsub("&(?i:apos);"; "\u0027") | gsub("&(?i:lt);"; "<") | gsub("&(?i:gt);"; ">") | gsub("&(?i:amp);"; "&");
+    def squash: gsub("[\t\n\r]"; "");
+    . as $raw
+    | ($raw | decode) as $dec
+    | [ $raw | scan("<[A-Za-z!/?](?:\"[^\"]*\"|\u0027[^\u0027]*\u0027|[^\"\u0027>])*>") ] as $tags
+    | ($tags | map(decode | squash)) as $t
+    | if ($raw | test("<\\s*script"; "i")) then "inline or external <script>"
+      elif ($t | any(test("^<(iframe|object|embed|frame|frameset|applet|base|form|link|portal|svg|math)[\\s/>]"; "i"))) then "embedding/linking element"
+      elif ($t | any(test("^<meta[^>]*http-equiv"; "i"))) then "meta http-equiv"
+      elif ($t | any(test("[\\s/\"\u0027]on[a-z]+\\s*="; "i"))) then "on* event handler"
+      elif ($t | any(test("[\\s/\"\u0027](src|href|srcset|action|formaction|poster|data|background|xlink:href|ping|cite|longdesc|lowsrc|dynsrc|manifest|codebase|archive)\\s*=\\s*[\"\u0027]?\\s*(https?:|//|\\\\\\\\|javascript:|vbscript:|data:(?!image/(png|gif|jpeg|webp);))"; "i")))
+        then "external or scriptable URL in an attribute"
+      elif ($dec | test("url\\s*\\(|@import|expression\\s*\\("; "i")) then "CSS url()/@import/expression"
+      else empty end' "$1"
 }
 
 write_digest() {

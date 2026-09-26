@@ -24,7 +24,15 @@ jobs:
         shell: bash
         run: command -v jq >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq jq; }
       - name: end-to-end smoke test (stubbed claude)
-        run: ./test/smoke-test.sh
+        shell: bash
+        # macOS: run under /bin/bash (stock 3.2.57, what launchd uses), not Homebrew bash
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            /bin/bash --version | head -1
+            /bin/bash test/smoke-test.sh
+          else
+            bash test/smoke-test.sh
+          fi
 
   shellcheck:
     runs-on: ubuntu-latest

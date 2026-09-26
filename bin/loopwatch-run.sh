@@ -33,6 +33,8 @@ source "$CONF"
 : "${MAX_BUNDLE_KB:=300}"
 : "${ACTIVITY_MIN_BYTES:=2000}"
 : "${FIRST_RUN_LOOKBACK_HOURS:=48}"
+: "${LOCK_STALE_HOURS:=6}"
+: "${GITHUB_INDEX_LAG_MIN:=15}"
 : "${SKIP_EMPTY:=true}"
 : "${GH_BIN:=gh}"
 : "${CATALOG_REPO:=adventurewave-labs/loopwatch-catalog}"
@@ -41,7 +43,9 @@ source "$CONF"
 : "${GITHUB_AUTHOR:=}"
 : "${EXPORT_MD_DIR:=}"
 : "${EXPORT_DIGEST_TO:=}"
-if [[ -z "${GITHUB_SCOPES+x}" ]]; then
+# default scopes only when the conf does not mention GITHUB_SCOPES at all;
+# GITHUB_SCOPES=() in the conf turns the GitHub source off
+if ! declare -p GITHUB_SCOPES >/dev/null 2>&1; then
   GITHUB_SCOPES=("user:marcuspat" "org:adventurewave-labs" "org:creandotumatrix-labs")
 fi
 PREFLIGHT_NEEDS_GH=true
@@ -123,13 +127,31 @@ if [[ "$LIST_ONLY" == "true" ]]; then
   exit 0
 fi
 
-# single-instance lock (mkdir-based — flock(1) is not on stock macOS)
+# single-instance lock (mkdir-based — flock(1) is not on stock macOS). The holder's PID
+# is recorded; a lock whose PID is gone, or older than LOCK_STALE_HOURS, is reclaimed
+# so one crash can never silently stop every later run.
 LOCK="$STATE_DIR/.lock"
-if ! mkdir "$LOCK" 2>/dev/null; then
-  log "lock held ($LOCK) — another run active; exiting"
+USAGE_FILE=/dev/null
+LEDGER_DONE=false
+take_lock() {
+  if mkdir "$LOCK" 2>/dev/null; then echo "$$" > "$LOCK/pid"; return 0; fi
+  local pid age
+  pid="$(cat "$LOCK/pid" 2>/dev/null || true)"
+  age=$(( $(now_epoch) - $(file_mtime "$LOCK") ))
+  if { [[ -n "$pid" ]] && ! kill -0 "$pid" 2>/dev/null; } || [[ "$age" -gt $(( LOCK_STALE_HOURS * 3600 )) ]] \
+     || { [[ -z "$pid" ]] && [[ "$age" -gt 60 ]]; }; then
+    log "reclaiming stale lock (pid ${pid:-none}, ${age}s old)"
+    rm -rf "$LOCK"
+    if mkdir "$LOCK" 2>/dev/null; then echo "$$" > "$LOCK/pid"; return 0; fi
+  fi
+  return 1
+}
+if ! take_lock; then
+  log "lock held by a live run ($LOCK) — exiting"
+  LEDGER_DONE=true
+  ledger_append skipped locked 0 || true
   exit 0
 fi
-LEDGER_DONE=false
 # One exit path: any non-zero exit (die, or set -e on an unexpected failure) leaves an
 # autopsy and a ledger row. Subshells do not inherit this trap, so a failing command
 # substitution can never write a spurious "failed" row.
@@ -140,13 +162,15 @@ on_exit() {
     autopsy
     finish failed "${DIE_REASON:-error}" 0
   fi
-  rmdir "$LOCK" 2>/dev/null || true
+  rm -rf "$LOCK" 2>/dev/null || true
 }
 trap 'on_exit $?' EXIT
 
 rm -rf "$RUN_DIR"
 mkdir -p "$RUN_DIR/bundle/transcripts" "$RUN_DIR/bundle/git" "$RUN_DIR/pages"
 : > "$RUN_DIR/usage.jsonl"
+USAGE_FILE="$RUN_DIR/usage.jsonl"
+mkdir -p "$STATE_DIR/private" && chmod 700 "$STATE_DIR/private"
 BUNDLE_BYTES=0
 TRIMMED_BYTES=0
 POSTSCAN_DROPS=0

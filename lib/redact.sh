@@ -49,9 +49,12 @@ redact_list_rules_json() {
 }
 
 # Materialize the combined rule set once per run.
+# The combined rules contain the client list, so they live outside the model's
+# working directory ($STATE_DIR/private is 0700 and denied to headless Read/Grep/Glob).
 build_rules() {
-  RULES_JSON="$RUN_DIR/.rules.json"
-  jq -nc --argjson a "$(builtin_rules_json)" --argjson b "$(redact_list_rules_json)" '$b + $a' > "$RULES_JSON"
+  mkdir -p "$STATE_DIR/private"
+  RULES_JSON="$STATE_DIR/private/rules.json"
+  ( umask 077; jq -nc --argjson a "$(builtin_rules_json)" --argjson b "$(redact_list_rules_json)" '$b + $a' > "$RULES_JSON" )
 }
 
 scrub_all() {
@@ -77,7 +80,7 @@ postscan() {
     [[ -n "$slug" ]] || continue
     # scan the page HTML plus its catalog-facing metadata together
     { cat "$RUN_DIR/$file" 2>/dev/null
-      jq -r --arg s "$slug" '.pages[] | select(.slug == $s) | [.slug, .title, .summary, ((.tags // []) | join(" ")), (.source // "")] | join("\n")' "$meta"
+      jq -r --arg s "$slug" '.pages[] | select(.slug == $s) | [.slug, .title, .summary, (.category // ""), ((.tags // []) | map(tostring) | join(" ")), (.source // "")] | map(tostring) | join("\n")' "$meta"
     } > "$tmp"
     hits="$(postscan_hits "$tmp")"
     if [[ -n "$hits" ]]; then

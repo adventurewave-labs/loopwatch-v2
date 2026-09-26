@@ -4,10 +4,10 @@
 #   -p <prompt> ...   -> writes stage outputs into cwd, prints a --output-format json result
 # Env knobs:
 #   STUB_CALLS        file that gets one line per model invocation
-#   STUB_PAGES        one (default) | none | unsafe | client | two   — what the extract stage writes
+#   STUB_PAGES        one (default) | none | unsafe | unsafe2 | client | category | two — what the extract stage writes
 #   STUB_TRIAGE       one (default) | none | garbage | traversal    — what the triage stage returns
 #   STUB_TRIAGE_COST  cost the triage stage reports (default 0.03)
-#   STUB_FAIL         budget | crash                                 — simulate a failed call
+#   STUB_FAIL         budget | budget0 | crash                       — simulate a failed call (budget0: error result, exit 0)
 #   STUB_MARKER       text planted in the persisted session transcript (self-ingestion test)
 #   STUB_DIGEST / STUB_HIGHLIGHT   override the digest summary / add a highlight
 set -u
@@ -19,7 +19,7 @@ if [[ "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
-prompt="" model="" persist=true budget="" tools=""
+prompt="" model="" persist=true budget="" tools="" deny=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -p) shift; prompt="$1" ;;
@@ -27,6 +27,7 @@ while [[ $# -gt 0 ]]; do
     --no-session-persistence) persist=false ;;
     --max-budget-usd) shift; budget="$1" ;;
     --allowedTools) shift; tools="$1" ;;
+    --disallowedTools) shift; deny="$1" ;;
     --max-turns|--output-format) shift ;;
   esac
   shift
@@ -35,7 +36,7 @@ done
 stage=extract
 if printf '%s' "$prompt" | grep -q 'LOOPWATCH-STAGE: triage'; then stage=triage; fi
 bundle_seen=no; [[ -d bundle ]] && bundle_seen=yes
-echo "call stage=$stage model=$model persist=$persist budget=$budget tools=$tools bundle=$bundle_seen excerpts=$(ls excerpts 2>/dev/null | tr '\n' ',') cwd=$PWD" >> "${STUB_CALLS:-/dev/null}"
+echo "call stage=$stage model=$model persist=$persist budget=$budget tools=$tools bundle=$bundle_seen excerpts=$(ls excerpts 2>/dev/null | tr '\n' ',') cwd=$PWD deny=$deny cwdfiles=$(ls -A | tr '\n' ',')" >> "${STUB_CALLS:-/dev/null}"
 
 # Emulate Claude Code session persistence: without --no-session-persistence the CLI
 # writes the whole session (prompt context included) under ~/.claude/projects/<encoded cwd>/.
@@ -55,7 +56,8 @@ result() {  # result <cost> <is_error> <subtype> [result-text]
 }
 
 case "${STUB_FAIL:-}" in
-  budget) result 1.25 true error_max_budget_usd; exit 1 ;;
+  budget)  result 1.25 true error_max_budget_usd; exit 1 ;;
+  budget0) result 0.31 true error_max_budget_usd; exit 0 ;;   # error result with exit 0
   crash)  echo "stub crash" >&2; exit 2 ;;
 esac
 
@@ -122,6 +124,24 @@ case "${STUB_PAGES:-one}" in
     page iframe-page "Iframe page" "<iframe src=\"about:blank\"></iframe>"
     page leaked-stripe-page "Stripe page" "<p>key sk_live_ABCDEFGHIJKLMNOPQRSTUVWX</p>"
     entries="$(meta_entry safe-page-one "Safe page"),$(meta_entry inline-script-page "Script page"),$(meta_entry onload-handler-page "Handler page"),$(meta_entry external-img-page "External img"),$(meta_entry iframe-page "Iframe page"),$(meta_entry leaked-stripe-page "Stripe page")" ;;
+  unsafe2)
+    page safe-page-two "Safe page two" '<p>code: <code>&lt;img onerror=x&gt;</code> <a href="#x">local</a> <a href="../index.html">up</a> <img src="data:image/png;base64,AAAA"></p>'
+    page quoted-gt-page "Quoted gt" '<img alt=">" onerror=alert(1) src=x>'
+    page entity-js-page "Entity js" '<a href="&#106;avascript:alert(1)">x</a>'
+    page tab-js-page "Tab js" '<a href="java&#9;script:alert(1)">x</a>'
+    page css-url-page "Css url" '<div style="background:url(&#47;&#47;evil/x)">x</div>'
+    page object-page "Object" '<object data="x"></object>'
+    page meta-refresh-page "Meta refresh" '<meta http-equiv="refresh" content="0;url=https://evil">'
+    page https-link-page "Https link" '<a href="https://example.com">x</a>'
+    page import-page "Import" '<style>@import "x.css";</style>'
+    entries="$(meta_entry safe-page-two "Safe page two")"
+    for sl in quoted-gt-page entity-js-page tab-js-page css-url-page object-page meta-refresh-page https-link-page import-page; do
+      entries="$entries,$(meta_entry "$sl" "Unsafe $sl")"
+    done ;;
+  category)
+    page clean-page "Clean page" ""
+    page cat-leak-page "Rollout notes" ""
+    entries="$(meta_entry clean-page "Clean page"),$(meta_entry cat-leak-page "Rollout notes" | jq -c '.category = "clients/globex"')" ;;
   client)
     page clean-page "Clean page" ""
     page client-page "Rollout notes" "<p>Deployed for Globex Corporation last night.</p>"

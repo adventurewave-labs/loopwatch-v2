@@ -37,6 +37,19 @@ claude_supports() {
   printf '%s' "$CLAUDE_HELP" | grep -q -- "$1"
 }
 
+# Read/Grep/Glob deny rules for headless calls. Claude Code lets Read reach outside
+# the cwd (verified on 2.1.283), so everything loopwatch must not show the model is
+# denied by absolute path ("//" prefix); deny rules also cover Grep and Glob (verified).
+claude_read_denies() {
+  local h="${HOME#/}" d rules=""
+  for d in "$h/.claude" "$h/Library" "$h/.config" "$h/.ssh" "$h/.aws" "$h/.gnupg" "$h/.netrc" \
+           "${STATE_DIR#/}/private" "${STATE_DIR#/}/failed" "${STATE_DIR#/}/logs" "${STATE_DIR#/}/catalog" \
+           ${CLAUDE_EXTRA_DENY_DIRS[@]+"${CLAUDE_EXTRA_DENY_DIRS[@]}"}; do
+    rules="${rules:+$rules,}Read(//${d#/}/**)"
+  done
+  printf '%s' "$rules"
+}
+
 # run_claude <stage> <model> <prompt-file> <allowed-tools> <max-turns> <budget-usd>
 # Runs headless claude from $RUN_DIR (fixed cwd — see R-4), captures the JSON result
 # in $RUN_DIR/<stage>.json and appends a usage record to $RUN_DIR/usage.jsonl.
@@ -46,7 +59,8 @@ run_claude() {
   local stage="$1" model="$2" prompt_file="$3" tools="$4" turns="$5" budget="$6"
   local out="$RUN_DIR/$stage.json" err="$RUN_DIR/$stage.err" rc
   local -a args
-  args=(-p "$(cat "$prompt_file")" --model "$model" --output-format json --allowedTools "$tools")
+  args=(-p "$(cat "$prompt_file")" --model "$model" --output-format json --allowedTools "$tools"
+        --disallowedTools "$(claude_read_denies)")
   if claude_supports --no-session-persistence; then args+=(--no-session-persistence); fi
   if claude_supports --strict-mcp-config;      then args+=(--strict-mcp-config); fi
   if [[ -n "$budget" ]] && claude_supports --max-budget-usd; then args+=(--max-budget-usd "$budget"); fi
@@ -62,6 +76,8 @@ run_claude() {
   ( cd "$RUN_DIR" && "$CLAUDE_BIN" "${args[@]}" ) < /dev/null > "$out" 2> "$err"
   rc=$?
   set -e
+  # a result the CLI flags as an error (budget/turn cap, API error) is a failure even on exit 0
+  if [[ "$rc" -eq 0 ]] && jq -e '.is_error == true' "$out" >/dev/null 2>&1; then rc=1; fi
 
   # Parse usage tolerantly: a non-JSON stdout (old CLI, crash) records nulls.
   local rec
@@ -79,7 +95,7 @@ run_claude() {
       '{stage: $stage, model: $model, rc: $rc, in: 0, cached: 0, out: 0, cost_usd: 0,
         duration_ms: 0, is_error: ($rc != 0), subtype: "unparsed_output"}')"
   fi
-  printf '%s\n' "$rec" >> "$RUN_DIR/usage.jsonl"
+  printf '%s\n' "$rec" >> "$USAGE_FILE"
   CLAUDE_LAST_SUBTYPE="$(printf '%s' "$rec" | jq -r '.subtype')"
   return "$rc"
 }
@@ -90,9 +106,8 @@ run_claude() {
 # plus loopwatch fields. Separate file so activity.py verdict stats stay clean.
 ledger_append() {
   local status="$1" skipped_reason="$2" pages="${3:-0}"
-  local usage="$RUN_DIR/usage.jsonl" wall_ms
+  local usage="${USAGE_FILE:-/dev/null}" wall_ms
   wall_ms=$(( ($(now_epoch) - RUN_START) * 1000 ))
-  [[ -f "$usage" ]] || : > "$usage"
   mkdir -p "$(dirname "$LEDGER")"
   jq -sc \
     --arg ts "$(now_local_iso)" \

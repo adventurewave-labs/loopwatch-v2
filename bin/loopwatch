@@ -109,11 +109,11 @@ cmd_ledger() {
 
 sub="${1:-help}"; shift || true
 case "$sub" in
-  run)       exec "$ROOT_DIR/bin/loopwatch-run.sh" --target "${LOOPWATCH_TARGET:-manual}" "$@" ;;
-  dry-run)   exec "$ROOT_DIR/bin/loopwatch-run.sh" --dry-run "$@" ;;
-  sources)   exec "$ROOT_DIR/bin/loopwatch-run.sh" --list-sources ;;
-  preflight) exec "$ROOT_DIR/bin/loopwatch-run.sh" --preflight ;;
-  discover)  exec "$ROOT_DIR/bin/loopwatch-discover.sh" "$@" ;;
+  run)       exec "$BASH" "$ROOT_DIR/bin/loopwatch-run.sh" --target "${LOOPWATCH_TARGET:-manual}" "$@" ;;
+  dry-run)   exec "$BASH" "$ROOT_DIR/bin/loopwatch-run.sh" --dry-run "$@" ;;
+  sources)   exec "$BASH" "$ROOT_DIR/bin/loopwatch-run.sh" --list-sources ;;
+  preflight) exec "$BASH" "$ROOT_DIR/bin/loopwatch-run.sh" --preflight ;;
+  discover)  exec "$BASH" "$ROOT_DIR/bin/loopwatch-discover.sh" "$@" ;;
   ledger)    cmd_ledger "$@" ;;
   setup)     cmd_setup ;;
   schedule)  cmd_schedule "$@" ;;

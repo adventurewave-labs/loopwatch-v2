@@ -75,7 +75,7 @@ build_excerpts() {
 
 # stage B hides the bundle so the writer can only work from the cited excerpts
 BUNDLE_HELD=""
-hold_bundle()    { BUNDLE_HELD="$STATE_DIR/.bundle-held"; rm -rf "$BUNDLE_HELD"; mv "$RUN_DIR/bundle" "$BUNDLE_HELD"; }
+hold_bundle()    { BUNDLE_HELD="$STATE_DIR/private/bundle-held"; rm -rf "$BUNDLE_HELD"; mv "$RUN_DIR/bundle" "$BUNDLE_HELD"; }
 restore_bundle() { if [[ -n "$BUNDLE_HELD" && -d "$BUNDLE_HELD" ]]; then rm -rf "$RUN_DIR/bundle"; mv "$BUNDLE_HELD" "$RUN_DIR/bundle"; fi; BUNDLE_HELD=""; }
 
 usage_cost() { jq -s 'map(.cost_usd) | add // 0' "$RUN_DIR/usage.jsonl"; }

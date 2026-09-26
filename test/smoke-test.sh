@@ -7,6 +7,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 FIXTURES="$SCRIPT_DIR/fixtures"
 
+# Product scripts run under the same bash as this test: CI's macOS job runs
+# `/bin/bash test/smoke-test.sh`, so everything is exercised on stock bash 3.2.
+LW_BASH="${LW_BASH:-$BASH}"
+echo "bash under test: $LW_BASH ($("$LW_BASH" -c 'echo $BASH_VERSION'))"
+
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/loopwatch-test.XXXXXX")"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 fail() { echo "FAIL [$CASE]: $*" >&2; [[ -n "${LWLOG:-}" ]] && tail -30 "$LWLOG" >&2; exit 1; }
@@ -67,7 +72,7 @@ EOF
   chmod 600 "$H/.config/loopwatch/redact.list"
 }
 conf() { echo "$*" >> "$H/.config/loopwatch/loopwatch.conf"; }
-lw() { LWLOG="$W/last-run.log"; "$SRC_ROOT/bin/loopwatch-run.sh" "$@" 2> "$LWLOG"; }
+lw() { LWLOG="$W/last-run.log"; "$LW_BASH" "$SRC_ROOT/bin/loopwatch-run.sh" "$@" 2> "$LWLOG"; }
 calls() { wc -l < "$CALLS" | tr -d ' '; }
 commits() { git -C "$CATALOG" rev-list --count HEAD; }
 remote_main_commits() { git -C "$BARE" rev-list --count main; }
@@ -83,11 +88,12 @@ jq -e '.entries | length == 1' "$SITE/manifest.json" >/dev/null || fail "manifes
 jq -e '.digests | length == 1' "$SITE/manifest.json" >/dev/null || fail "digest record missing"
 test -f "$SITE/digests/$TODAY.html" || fail "digest page missing"
 [[ "$(commits)" == "2" ]] || fail "expected 2 commits (init + loopwatch)"
-[[ "$(git -C "$CATALOG" rev-parse --abbrev-ref HEAD)" == "loopwatch/$TODAY" ]] || fail "run should commit on loopwatch/<date>"
+BR="$(git -C "$CATALOG" rev-parse --abbrev-ref HEAD)"
+[[ "$BR" == loopwatch/$TODAY-* ]] || fail "run should commit on loopwatch/<date>-<time>, got $BR"
 [[ "$(remote_main_commits)" == "1" ]] || fail "main on the remote must never be pushed to"
-git -C "$BARE" rev-parse -q --verify "refs/heads/loopwatch/$TODAY" >/dev/null || fail "run branch not pushed"
+git -C "$BARE" rev-parse -q --verify "refs/heads/$BR" >/dev/null || fail "run branch not pushed"
 [[ "$(grep -c '^pr create' "$STUB_GH_CALLS")" == "1" ]] || fail "expected exactly one pr create: $(cat "$STUB_GH_CALLS")"
-grep -q "^pr create head=loopwatch/$TODAY base=main" "$STUB_GH_CALLS" || fail "PR head/base wrong"
+grep -q "^pr create head=$BR base=main" "$STUB_GH_CALLS" || fail "PR head/base wrong"
 grep -q "Settled the Turbo-Flow" "$STUB_GH_STATE/pr-1-body.md" || fail "PR body should carry the digest"
 ok "page, manifest, digest committed on loopwatch/<date>, pushed, exactly one PR, main untouched"
 B="$LW_STATE/run/bundle/transcripts"
@@ -283,18 +289,18 @@ conf 'SITE_VISIBILITY=public'
 if lw; then fail "publishing run must fail when the site is not protected"; fi
 [[ "$(calls)" == "0" ]] || fail "failed preflight must not reach the model"
 jq -e '.status == "failed" and .skipped_reason == "preflight_failed"' <(ledger_last) >/dev/null || fail "preflight failure not in ledger"
-if "$SRC_ROOT/bin/loopwatch-run.sh" --preflight > "$W/pf.txt" 2>&1; then fail "--preflight should exit non-zero"; fi
+if "$LW_BASH" "$SRC_ROOT/bin/loopwatch-run.sh" --preflight > "$W/pf.txt" 2>&1; then fail "--preflight should exit non-zero"; fi
 grep -q "^FAIL.*SITE_VISIBILITY" "$W/pf.txt" || fail "--preflight should name the failing check"
 ok "unprotected site: run refused before collection, --preflight exits non-zero"
 conf 'ALLOW_PUBLIC=true'
-"$SRC_ROOT/bin/loopwatch-run.sh" --preflight > "$W/pf.txt" 2>&1 || fail "ALLOW_PUBLIC=true should pass preflight"
+"$LW_BASH" "$SRC_ROOT/bin/loopwatch-run.sh" --preflight > "$W/pf.txt" 2>&1 || fail "ALLOW_PUBLIC=true should pass preflight"
 grep -q "^WARN.*ALLOW_PUBLIC" "$W/pf.txt" || fail "ALLOW_PUBLIC should warn"
 conf 'ALLOW_PUBLIC=false'; conf 'SITE_VISIBILITY=protected'
 printf '%s\n' 'bad(regex' > "$H/.config/loopwatch/redact.list"
-if "$SRC_ROOT/bin/loopwatch-run.sh" --preflight > "$W/pf.txt" 2>&1; then fail "invalid redact.list regex should fail preflight"; fi
+if "$LW_BASH" "$SRC_ROOT/bin/loopwatch-run.sh" --preflight > "$W/pf.txt" 2>&1; then fail "invalid redact.list regex should fail preflight"; fi
 grep -q "^FAIL.*redact.list" "$W/pf.txt" || fail "bad regex not reported"
 rm -f "$H/.config/loopwatch/redact.list"
-if "$SRC_ROOT/bin/loopwatch-run.sh" --preflight > "$W/pf.txt" 2>&1; then fail "missing redact.list should fail preflight"; fi
+if "$LW_BASH" "$SRC_ROOT/bin/loopwatch-run.sh" --preflight > "$W/pf.txt" 2>&1; then fail "missing redact.list should fail preflight"; fi
 ok "ALLOW_PUBLIC override warns; bad or missing redact.list fails"
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -346,7 +352,7 @@ ok "stage B skipped when the run budget is spent"
 
 # ═════════════════════════════════════════════════════════════════════════
 setup "GitHub source via API, zero local repos (R-8)"
-conf 'INCLUDE_PROJECTS=()'
+conf 'INCLUDE_PROJECTS=("github:*")'
 conf 'GITHUB_SCOPES=("user:marcuspat" "org:adventurewave-labs")'
 export STUB_GH_COMMITS="$FIXTURES/gh-search-commits.json" STUB_GH_PRS="$FIXTURES/gh-search-prs.json"
 lw --dry-run
@@ -354,8 +360,8 @@ G="$LW_STATE/run/bundle/git"
 grep -q "commit marcuspat/turbo-rig a1b2c3d 2026-09-25  feat(gate): record cost_usd per gate verdict" "$G"/github-user-marcuspat.log || fail "commit line missing: $(cat "$G"/*)"
 grep -q "PR merged marcuspat/turbo-rig#42" "$G"/github-user-marcuspat.log || fail "merged PR missing"
 if grep -rq "ghp_abcdefghijklmnopqrstuvwxyz999999" "$G"; then fail "secret in commit message not scrubbed"; fi
-grep -q "api search/commits q=user:marcuspat author:marcuspat committer-date:>20" "$STUB_GH_CALLS" || fail "commit query wrong: $(cat "$STUB_GH_CALLS")"
-grep -q "api search/issues q=org:adventurewave-labs is:pr is:merged merged:>20" "$STUB_GH_CALLS" || fail "PR query wrong"
+grep -q "api search/commits q=user:marcuspat author:marcuspat -repo:stub/catalog committer-date:20" "$STUB_GH_CALLS" || fail "commit query wrong: $(cat "$STUB_GH_CALLS")"
+grep -q "api search/issues q=org:adventurewave-labs is:pr is:merged author:marcuspat -repo:stub/catalog merged:20" "$STUB_GH_CALLS" || fail "PR query wrong"
 grep -q "stage=triage" "$CALLS" || fail "GitHub-only activity should reach triage"
 ok "commits + merged PRs per scope, author resolved from gh, secrets scrubbed, no local clones"
 lw
@@ -363,7 +369,7 @@ since1="$(jq -r '.github.since' "$LW_STATE/watermarks.json")"
 [[ "$since1" =~ ^20[0-9-]+T[0-9:]+Z$ ]] || fail "github watermark not a UTC timestamp: $since1"
 : > "$STUB_GH_CALLS"
 lw --dry-run
-grep -q "committer-date:>$since1" "$STUB_GH_CALLS" || fail "second run should query since the watermark"
+grep -q "committer-date:$since1\.\." "$STUB_GH_CALLS" || fail "second run should query from the watermark"
 ok "timestamp watermark advances and is used as the next window"
 
 setup "GitHub search failure holds the GitHub watermark"
@@ -383,15 +389,16 @@ export STUB_PAGES=two
 lw
 [[ "$(grep -c '^pr create' "$STUB_GH_CALLS")" == "1" ]] || fail "second run must not open a second PR"
 grep -q "^pr comment 1" "$STUB_GH_CALLS" || fail "second run should comment on the open PR"
-[[ "$(git -C "$BARE" rev-list --count "loopwatch/$TODAY")" == "3" ]] || fail "second run should add a commit to the PR branch"
+BR="$(jq -r '.[0].headRefName' "$STUB_GH_STATE/prs.json")"
+[[ "$(git -C "$BARE" rev-list --count "$BR")" == "3" ]] || fail "second run should add a commit to the PR branch"
 [[ "$(remote_main_commits)" == "1" ]] || fail "main was pushed to"
-git -C "$BARE" show "loopwatch/$TODAY:site/manifest.json" | jq -e '.entries | length == 2' >/dev/null || fail "PR branch manifest should hold both pages"
+git -C "$BARE" show "$BR:site/manifest.json" | jq -e '.entries | length == 2' >/dev/null || fail "PR branch manifest should hold both pages"
 ok "second run added to the open PR branch; one PR total; main untouched"
 
 setup "publishing: push failure fails closed"
 lw --dry-run
 [[ "$(grep -c '^pr create' "$STUB_GH_CALLS")" == "0" ]] || fail "dry-run must not open a PR"
-if git -C "$BARE" rev-parse -q --verify "refs/heads/loopwatch/$TODAY" >/dev/null; then fail "dry-run must not push"; fi
+if [[ -n "$(git -C "$BARE" for-each-ref 'refs/heads/loopwatch/*')" ]]; then fail "dry-run must not push"; fi
 ok "dry-run: no push, no PR"
 git -C "$CATALOG" remote set-url origin "$W/does-not-exist.git"
 if lw; then fail "run should fail when the push fails"; fi
@@ -402,12 +409,12 @@ ok "unreachable remote: run fails, watermarks held"
 # ═════════════════════════════════════════════════════════════════════════
 setup "CLI: setup, run, ledger, schedule print (R-13)"
 rm -f "$H/.config/loopwatch/loopwatch.conf" "$H/.config/loopwatch/redact.list"
-"$SRC_ROOT/bin/loopwatch" setup > "$W/setup.txt"
+"$LW_BASH" "$SRC_ROOT/bin/loopwatch" setup > "$W/setup.txt"
 test -f "$H/.config/loopwatch/loopwatch.conf" || fail "setup should create the conf"
 [[ "$(stat -c %a "$H/.config/loopwatch/redact.list" 2>/dev/null || stat -f %Lp "$H/.config/loopwatch/redact.list")" == "600" ]] || fail "redact.list should be 0600"
 test -L "$H/.local/bin/loopwatch" || fail "setup should link ~/.local/bin/loopwatch"
 grep -q '^INCLUDE_PROJECTS=($' "$H/.config/loopwatch/loopwatch.conf" || fail "fresh conf must ship an empty allowlist"
-"$SRC_ROOT/bin/loopwatch" setup > "$W/setup2.txt"; grep -q "keep:" "$W/setup2.txt" || fail "second setup must not overwrite"
+"$LW_BASH" "$SRC_ROOT/bin/loopwatch" setup > "$W/setup2.txt"; grep -q "keep:" "$W/setup2.txt" || fail "second setup must not overwrite"
 ok "setup creates conf (empty allowlist), 0600 redact.list, PATH link; idempotent"
 # back to the sandbox config for a real run through the CLI entry point
 cat >> "$H/.config/loopwatch/loopwatch.conf" <<EOF
@@ -421,18 +428,18 @@ INCLUDE_PROJECTS=("*")
 ACTIVITY_MIN_BYTES=200
 EOF
 LWLOG="$W/cli.log"
-"$H/.local/bin/loopwatch" run 2> "$LWLOG" || fail "loopwatch run via the PATH link failed"
+"$LW_BASH" "$H/.local/bin/loopwatch" run 2> "$LWLOG" || fail "loopwatch run via the PATH link failed"
 test -f "$SITE/pages/$YEAR/k8s-cronjob-queue-ingest.html" || fail "loopwatch run did not publish"
 jq -e '.target == "manual"' <(ledger_last) >/dev/null || fail "on-demand run should be target=manual"
-LOOPWATCH_TARGET=nightly "$SRC_ROOT/bin/loopwatch" run 2>> "$LWLOG"
+LOOPWATCH_TARGET=nightly "$LW_BASH" "$SRC_ROOT/bin/loopwatch" run 2>> "$LWLOG"
 jq -e '.target == "nightly" and .status == "skipped"' <(ledger_last) >/dev/null || fail "target override not recorded"
-"$SRC_ROOT/bin/loopwatch" ledger > "$W/ledger.txt"
+"$LW_BASH" "$SRC_ROOT/bin/loopwatch" ledger > "$W/ledger.txt"
 grep -q "all-time: 2 runs, 1 with model calls, 1 pages" "$W/ledger.txt" || fail "ledger summary wrong: $(cat "$W/ledger.txt")"
-"$SRC_ROOT/bin/loopwatch" schedule print 6 5 > "$W/plist.xml"
+"$LW_BASH" "$SRC_ROOT/bin/loopwatch" schedule print 6 5 > "$W/plist.xml"
 grep -q "<string>nightly</string>" "$W/plist.xml" || fail "scheduled runs must be target=nightly"
 grep -q "<integer>6</integer>" "$W/plist.xml" || fail "hour not rendered"
 if grep -q "__" "$W/plist.xml"; then fail "unrendered placeholder in plist"; fi
-[[ "$("$SRC_ROOT/bin/loopwatch" version)" == "loopwatch "* ]] || fail "version"
+[[ "$("$LW_BASH" "$SRC_ROOT/bin/loopwatch" version)" == "loopwatch "* ]] || fail "version"
 ok "loopwatch run (manual) + nightly target in ledger; ledger summary; plist renders; nothing scheduled by default"
 if [[ -e "$H/Library/LaunchAgents" ]]; then fail "setup/run must not install a schedule"; fi
 
@@ -465,6 +472,118 @@ ls "$LW_STATE/run/bundle/transcripts" | grep -q "^cowork-" || fail "cowork trans
 if ls "$LW_STATE/run/bundle/transcripts" | grep -q "^claude-code-"; then fail "cowork:* must not include claude-code sources"; fi
 grep -q "=== source: cowork:" "$LW_STATE/run/bundle/transcripts"/cowork-*.txt || fail "cowork label missing"
 ok "glob with spaces in the path, cowork label, label-scoped allowlist"
+
+# ═════════════════════════════════════════════════════════════════════════
+setup "review: headless calls deny reads of raw transcripts, config, private state"
+lw
+grep "stage=triage" "$CALLS" | grep -q "deny=.*Read(//${H#/}/.claude/\*\*)" || fail "raw transcripts not denied: $(cat "$CALLS")"
+grep "stage=triage" "$CALLS" | grep -q "Read(//${H#/}/.config/\*\*)" || fail "config (redact.list) not denied"
+grep "stage=extract" "$CALLS" | grep -q "Read(//${LW_STATE#/}/private/\*\*)" || fail "held bundle/rules not denied"
+if grep "stage=" "$CALLS" | grep -q "cwdfiles=.*rules"; then fail "redaction rules visible in the model's cwd"; fi
+[[ "$(stat -c %a "$LW_STATE/private" 2>/dev/null || stat -f %Lp "$LW_STATE/private")" == "700" ]] || fail "private state dir should be 0700"
+if grep -q "api search" "$STUB_GH_CALLS"; then fail "GITHUB_SCOPES=() must turn the GitHub source off"; fi
+ok "deny rules passed; rules.json outside cwd in a 0700 dir; GITHUB_SCOPES=() really off"
+
+# ═════════════════════════════════════════════════════════════════════════
+setup "review: GitHub allowlist, author filter, catalog repo excluded, truncation holds window"
+conf 'INCLUDE_PROJECTS=("github:marcuspat/*")'
+conf 'GITHUB_SCOPES=("org:adventurewave-labs")'
+jq '.items += [{"sha":"cafe0000cafe","repository":{"full_name":"stub/catalog"},"commit":{"message":"loopwatch: catalog self-commit","committer":{"date":"2026-09-25T22:00:00Z"}}}]' \
+  "$FIXTURES/gh-search-commits.json" > "$W/commits.json"
+export STUB_GH_COMMITS="$W/commits.json" STUB_GH_PRS="$FIXTURES/gh-search-prs.json"
+lw --dry-run
+G="$LW_STATE/run/bundle/git/github-org-adventurewave-labs.log"
+grep -q "commit marcuspat/turbo-rig" "$G" || fail "allowlisted repo missing"
+if grep -q "loopwatch-v2\|stub/catalog\|self-commit" "$G"; then fail "non-allowlisted or catalog repo leaked into the bundle"; fi
+grep -q "search/commits q=org:adventurewave-labs author:marcuspat -repo:stub/catalog committer-date:20[0-9T:-]*Z\.\.20" "$STUB_GH_CALLS" || fail "commit query shape: $(cat "$STUB_GH_CALLS")"
+grep -q "search/issues q=org:adventurewave-labs is:pr is:merged author:marcuspat -repo:stub/catalog merged:" "$STUB_GH_CALLS" || fail "PR query must filter author and exclude the catalog"
+ok "github:<owner>/<repo> allowlist applied; catalog repo excluded in query and filter; author on PRs; bounded window"
+jq -n '{total_count: 150, items: [range(100) | {sha: ("s" + tostring), repository: {full_name: "marcuspat/turbo-rig"}, commit: {message: ("c" + tostring), committer: {date: "2026-09-25T10:00:00Z"}}}]}' > "$W/many.json"
+export STUB_GH_COMMITS="$W/many.json"
+conf 'GITHUB_MAX_PAGES=1'
+lw
+grep -q "truncated" "$LWLOG" || fail "truncation not logged"
+jq -e '.github.since == null' "$LW_STATE/watermarks.json" >/dev/null || fail "truncated window must be retried (watermark held)"
+ok "truncated search: logged, GitHub window held"
+
+# ═════════════════════════════════════════════════════════════════════════
+setup "review: a closed PR's content is not re-proposed"
+lw
+BR1="$(jq -r '.[0].headRefName' "$STUB_GH_STATE/prs.json")"
+jq '.[0].state = "closed"' "$STUB_GH_STATE/prs.json" > "$W/p.tmp" && mv "$W/p.tmp" "$STUB_GH_STATE/prs.json"
+sleep 1
+printf '%s\n' "$(jq -nc '{type:"user",cwd:"/Users/dev/src/turbo-flow",message:{role:"user",content:"New day: decided the spot pool gets a PodDisruptionBudget with minAvailable 1 so voluntary evictions never drain every worker at once; also set terminationGracePeriodSeconds to 120 so in-flight queue messages are acked or requeued before the node goes away."}}')" >> "$TX"
+export STUB_PAGES=two
+lw
+[[ "$(grep -c '^pr create' "$STUB_GH_CALLS")" == "2" ]] || fail "expected a fresh PR after the first was closed"
+BR2="$(jq -r '.[1].headRefName' "$STUB_GH_STATE/prs.json")"
+[[ "$BR1" != "$BR2" ]] || fail "closed PR's branch was reused ($BR1)"
+if git -C "$BARE" merge-base --is-ancestor "$BR1" "$BR2"; then fail "new PR branch is built on the closed PR's commits"; fi
+[[ "$(git -C "$BARE" rev-list --count "$BR2")" == "2" ]] || fail "new PR branch should be main + one commit"
+ok "closed PR stays closed: next run starts a new branch from main, none of the closed PR's commits"
+
+setup "review: gh pr list failure fails closed"
+lw --dry-run >/dev/null 2>&1 || true
+cat > "$W/gh-broken" <<EOF
+#!/usr/bin/env bash
+if [[ "\$1 \$2" == "pr list" ]]; then exit 1; fi
+exec "$SRC_ROOT/test/stubs/gh" "\$@"
+EOF
+chmod +x "$W/gh-broken"; conf "GH_BIN=\"$W/gh-broken\""
+if lw; then fail "run must fail when open PRs cannot be listed"; fi
+jq -e '.skipped_reason == "gh_pr_list_failed"' <(ledger_last) >/dev/null || fail "reason not recorded: $(ledger_last)"
+[[ "$(grep -c '^pr create' "$STUB_GH_CALLS")" == "0" ]] || fail "no PR may be opened blind"
+ok "unknown PR state: no PR opened, run failed with gh_pr_list_failed"
+
+# ═════════════════════════════════════════════════════════════════════════
+setup "review: validator bypasses (quoted >, entities, tab-split scheme, url(), object, meta refresh)"
+export STUB_PAGES=unsafe2
+lw
+test -f "$SITE/pages/$YEAR/safe-page-two.html" || fail "safe page with data:image, relative links and escaped code should publish"
+for bad in quoted-gt-page entity-js-page tab-js-page css-url-page object-page meta-refresh-page https-link-page import-page; do
+  if [[ -f "$SITE/pages/$YEAR/$bad.html" ]]; then fail "bypass published: $bad"; fi
+done
+jq -e '.validator_drops == 8' <(ledger_last) >/dev/null || fail "expected 8 validator drops: $(ledger_last)"
+ok "all 8 bypass variants dropped; the safe page survives"
+
+setup "review: client name in category, PR body stays clean"
+printf '%s\n' 'Globex( Corporation)?' > "$H/.config/loopwatch/redact.list"
+export STUB_PAGES=category
+lw
+if jq -e '.entries | any(.category | test("globex"; "i"))' "$SITE/manifest.json" >/dev/null; then fail "client name reached manifest via category"; fi
+test -f "$SITE/pages/$YEAR/clean-page.html" || fail "clean page should publish"
+if grep -qi "globex" "$STUB_GH_STATE"/pr-*-body.md; then fail "client name in the PR body"; fi
+ok "category is post-scanned; PR body clean"
+
+# ═════════════════════════════════════════════════════════════════════════
+setup "review: an error result on exit 0 still fails closed"
+export STUB_FAIL=budget0
+if lw; then fail "is_error=true with exit 0 must fail the run"; fi
+jq -e '.skipped_reason == "budget_exceeded"' <(ledger_last) >/dev/null || fail "should be budget_exceeded: $(ledger_last)"
+jq -e '.files | length == 0' "$LW_STATE/watermarks.json" >/dev/null || fail "watermarks advanced"
+ok "is_error result treated as failure regardless of exit code"
+
+setup "review: stale lock reclaimed; live lock skips with a ledger row"
+mkdir -p "$LW_STATE/.lock"; echo 999999 > "$LW_STATE/.lock/pid"
+lw
+grep -q "reclaiming stale lock" "$LWLOG" || fail "dead-PID lock not reclaimed"
+jq -e '.status == "published"' <(ledger_last) >/dev/null || fail "run after stale lock should publish"
+mkdir -p "$LW_STATE/.lock"; echo $$ > "$LW_STATE/.lock/pid"
+n1="$(calls)"
+lw
+[[ "$(calls)" == "$n1" ]] || fail "locked run must not call the model"
+jq -e '.status == "skipped" and .skipped_reason == "locked"' <(ledger_last) >/dev/null || fail "locked skip not in ledger"
+test -d "$LW_STATE/.lock" || fail "a skipped run must not release someone else's lock"
+rm -rf "$LW_STATE/.lock"
+ok "dead-PID lock reclaimed; live lock -> skipped/locked row, lock untouched"
+
+setup "review: one malformed line does not drop the rest of the delta"
+lw
+{ echo '{"type":"user","message":{"role":"user","content":"broken json line'
+  jq -nc '{type:"user",cwd:"/Users/dev/src/turbo-flow",message:{role:"user",content:"AFTER-BAD-LINE-MARKER decided to pin the queue client to v2 because v3 drops at-least-once acks under backpressure; rollback plan is the v2 tag."}}'; } >> "$TX"
+lw --dry-run
+grep -rq "AFTER-BAD-LINE-MARKER" "$LW_STATE/run/bundle" || fail "content after a malformed line was lost"
+ok "malformed line skipped, following lines kept"
 
 echo
 echo "PASS — $N_CASES cases green"
