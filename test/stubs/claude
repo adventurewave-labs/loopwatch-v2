@@ -7,7 +7,7 @@
 # Env knobs:
 #   STUB_CALLS        file that gets one line per model invocation
 #   STUB_INPUTS       dir: each call's stdin is saved there as <stage>-<n>.txt
-#   STUB_PAGES        one (default) | none | unsafe | unsafe2 | client | category | two | paraphrase | malformed — what the writer returns
+#   STUB_PAGES        one (default) | none | unsafe | unsafe2 | client | category | two | paraphrase | malformed | grounding — what the writer returns
 #   STUB_TRIAGE       one (default) | none | garbage | traversal    — what triage returns
 #   STUB_TRIAGE_COST  cost the triage stage reports (default 0.03)
 #   STUB_FAIL         budget | budget0 | crash                       — simulate a failed call (budget0: error result, exit 0)
@@ -128,6 +128,14 @@ case "${STUB_PAGES:-one}" in
        add "$(pg k8s-cronjob-queue-ingest "Title ONE" "<p>BODY ONE</p>")"
        add '{"candidate_id":"c1","slug":"object-body-page","title":"x","category":"ideas","tags":[],"summary":"x","source":"x","body_html":{"x":1}}'
        add "$(pg k8s-cronjob-queue-ingest "Title TWO" "<p>BODY TWO</p>")" ;;
+  grounding)    # one page whose code comes from the transcript, one that invents its commands
+       add "$(pg grounded-cronjob-page "CronJob pinned to spot with a PDB" '<pre><code>kubectl get cronjobs
+activeDeadlineSeconds: 600
+PodDisruptionBudget</code></pre>')"
+       add "$(pg invented-helm-page "Helm rollout for the ingest workers" '<pre><code>helm upgrade ingest ./charts/ingest --set queue.maxRetries=7
+kubectl rollout restart deploy/ingest-worker --grace-period=30
+export INGEST_QUEUE_URL=amqp://mq.internal:5672/ingest
+kubectl get cronjobs</code></pre>')" ;;
   paraphrase)   # same topic as "one" under a different slug, plus an unrelated page
        add "$(pg cronjob-work-queue-for-turbo-flow "Turbo-Flow ingest via K8s CronJob and a work queue")"
        add "$(pg spot-pool-pdb-batch "Spot node pool with a PDB for batch ingest")" ;;

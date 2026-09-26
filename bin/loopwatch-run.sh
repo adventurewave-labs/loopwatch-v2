@@ -49,6 +49,8 @@ source "$CONF"
 : "${EXPORT_MD_DIR:=}"
 : "${EXPORT_DIGEST_TO:=}"
 : "${NEAR_DUP_THRESHOLD:=0.55}"
+: "${GROUNDING:=on}"                   # code-token groundedness guard (on|off)
+: "${GROUNDING_DROP_MIN:=4}"           # drop a page with >= this many unsupported code tokens (and >= half)
 : "${OTEL_EXPORT_DIR:=}"
 : "${OTEL_EXPORTER_OTLP_ENDPOINT:=}"
 : "${OTEL_EXPORTER_OTLP_HEADERS:=}"
@@ -188,6 +190,8 @@ TRIMMED_BYTES=0
 POSTSCAN_DROPS=0
 VALIDATOR_DROPS=0
 NEAR_DUP_DROPS=0
+GROUNDING_DROPS=0
+UNGROUNDED_TOKENS=0
 STAGE_B_SKIP=""
 
 autopsy() {

@@ -869,5 +869,22 @@ jq -e '.skipped_reason == "triage_schema_violation"' <(ledger_last) >/dev/null |
 grep -q 'highlights\[1\]: longer than 400' "$LWLOG" || fail "reason not logged: $(grep FATAL "$LWLOG")"
 ok "top-level triage violation fails closed (triage_schema_violation)"
 
+# ═════════════════════════════════════════════════════════════════════════
+setup "groundedness guard: code tokens must come from the cited excerpts"
+conf 'NEAR_DUP_THRESHOLD=0'
+STUB_PAGES=grounding lw
+test -f "$SITE/pages/$YEAR/grounded-cronjob-page.html" || fail "grounded page should publish"
+test ! -f "$SITE/pages/$YEAR/invented-helm-page.html" || fail "page with invented commands should be dropped"
+grep -q "grounding: dropped invented-helm-page: [0-9]* of its code tokens are not in the source excerpts" "$LWLOG" || fail "drop not logged: $(grep grounding "$LWLOG")"
+ls "$LW_STATE"/private/ungrounded/*/invented-helm-page.html >/dev/null 2>&1 || fail "dropped page must be kept for review"
+jq -e '.grounding_drops == 1 and .pages == 1' <(ledger_last) >/dev/null || fail "ledger: $(ledger_last | jq -c '{grounding_drops, ungrounded_tokens, pages}')"
+ok "page quoting the transcript's kubectl/activeDeadlineSeconds/PodDisruptionBudget kept; invented helm/kubectl page dropped and kept for review"
+setup "groundedness guard: GROUNDING=off publishes everything"
+conf 'NEAR_DUP_THRESHOLD=0'
+conf 'GROUNDING=off'
+STUB_PAGES=grounding lw
+test -f "$SITE/pages/$YEAR/invented-helm-page.html" || fail "GROUNDING=off must not drop"
+ok "GROUNDING=off disables the guard"
+
 echo
 echo "PASS — $N_CASES cases green"

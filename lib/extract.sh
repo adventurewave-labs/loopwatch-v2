@@ -83,6 +83,51 @@ render_page_files() {
     done
 }
 
+# ── groundedness guard ──────────────────────────────────────────────────
+# Code is the part of a page most likely to be copy-pasted months later, so every distinctive
+# token inside <code>/<pre> (paths, flags, identifiers with _ . / - $ ~ @ :, camelCase, mixed
+# alphanumerics; >= 4 chars) must appear in the excerpts the writer was given for that
+# candidate. Unsupported tokens are logged and recorded on the page's run-meta entry; a page
+# with >= GROUNDING_DROP_MIN unsupported tokens that are also >= half of its code tokens is
+# dropped (kept under private/ungrounded/<run> for review). GROUNDING=off disables it.
+GROUNDING_JQ='def unent: gsub("&lt;"; "<") | gsub("&gt;"; ">") | gsub("&quot;"; "\"") | gsub("&#39;"; "\u0027") | gsub("&amp;"; "&");
+  def code_tokens:
+    [ scan("(?s)<code>(.*?)</code>") | .[0] | unent
+      | scan("[A-Za-z0-9_./~$@:+=-]{4,}")
+      | sub("[.,:;=]+$"; "") | sub("^[.:=]+"; "")
+      | select(length >= 4)
+      | select(test("^[0-9.]+$") | not)
+      | select(test("[_/.$~@:-]") or test("[a-z][A-Z]") or test("[A-Za-z][0-9]|[0-9][A-Za-z]")) ] | unique;
+  def grounded($corpus): . as $t | ($corpus | contains($t)) or (($corpus | ascii_downcase) | contains($t | ascii_downcase));'
+grounding_check() {
+  [[ "${GROUNDING:-on}" != "off" ]] || return 0
+  local f corpora verdicts slug n u
+  corpora="$( { for f in "$RUN_DIR"/excerpts/*.txt; do
+                  [[ -f "$f" ]] && jq -Rs --arg id "$(basename "$f" .txt)" '{($id): .}' "$f"
+                done; echo '{}'; } | jq -s 'add' )"
+  verdicts="$(jq -c --argjson c "$corpora" --argjson dmin "${GROUNDING_DROP_MIN:-4}" "$GROUNDING_JQ"'
+    map(. as $p | ($c[$p.candidate_id] // "") as $corpus | ($p.body_html | code_tokens) as $t
+        | ($t | map(select(grounded($corpus) | not))) as $u
+        | {slug: $p.slug, tokens: ($t | length), unsupported: $u,
+           drop: (($u | length) >= $dmin and (($u | length) * 2 >= ($t | length)))})' "$RUN_DIR/writer-pages.json")"
+  printf '%s' "$verdicts" > "$RUN_DIR/grounding.json"
+  while IFS=$'\t' read -r slug n u; do
+    log "grounding: $slug has $n code token(s) not found in its excerpts: $u"
+  done < <(jq -r '.[] | select((.unsupported | length) > 0 and (.drop | not)) | [.slug, (.unsupported | length), (.unsupported[:6] | join(" "))] | @tsv' <<< "$verdicts")
+  while IFS=$'\t' read -r slug n u; do
+    log "grounding: dropped $slug: $n of its code tokens are not in the source excerpts ($u)"
+    mkdir -p "$STATE_DIR/private/ungrounded/$RUN_TS"
+    jq -r --arg s "$slug" '.[] | select(.slug == $s) | .body_html' "$RUN_DIR/writer-pages.json" > "$STATE_DIR/private/ungrounded/$RUN_TS/$slug.html"
+    GROUNDING_DROPS=$(( ${GROUNDING_DROPS:-0} + 1 ))
+  done < <(jq -r '.[] | select(.drop) | [.slug, (.unsupported | length), (.unsupported[:6] | join(" "))] | @tsv' <<< "$verdicts")
+  UNGROUNDED_TOKENS=$(( ${UNGROUNDED_TOKENS:-0} + $(jq '[.[] | select(.drop | not) | .unsupported | length] | add // 0' <<< "$verdicts") ))
+  jq --argjson v "$verdicts" '
+    ($v | map(select(.drop) | .slug)) as $d
+    | map(select(.slug as $s | $d | index($s) | not))
+    | map(. as $p | . + {ungrounded: ([$v[] | select(.slug == $p.slug) | .unsupported[]])})' \
+    "$RUN_DIR/writer-pages.json" > "$RUN_DIR/wp.tmp" && mv "$RUN_DIR/wp.tmp" "$RUN_DIR/writer-pages.json"
+}
+
 # render_pages: structured page bodies -> pages/<slug>.html (fixed skeleton, escaped
 # metadata) + run-meta.json. The validator and post-scan still run on the result.
 render_pages() {
@@ -119,10 +164,11 @@ render_pages() {
     jq "$BODY_GATE_JQ"' map(select(.body_html | body_ok))' "$RUN_DIR/writer-pages.json" > "$RUN_DIR/wp.tmp" \
       && mv "$RUN_DIR/wp.tmp" "$RUN_DIR/writer-pages.json"
   fi
+  grounding_check
   render_page_files "$RUN_DIR/writer-pages.json"
   jq --slurpfile t "$RUN_DIR/triage-meta.json" '
     {run_date: $t[0].run_date, digest_summary: $t[0].digest_summary, highlights: $t[0].highlights,
-     pages: [.[] | {candidate_id, slug, title, category, tags: (.tags // []), summary, source,
+     pages: [.[] | {candidate_id, slug, title, category, tags: (.tags // []), summary, source, ungrounded: (.ungrounded // []),
                     file: ("pages/" + .slug + ".html")}]}' \
     "$RUN_DIR/writer-pages.json" > "$RUN_DIR/run-meta.json"
 }
