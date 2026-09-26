@@ -188,7 +188,10 @@ publish_run() {
     fi
     nd="$(awk -F'\t' -v s="$slug" '$1 == s { print $2 " (similarity " $3 ")"; exit }' "$RUN_DIR/near-dups.tsv")"
     if [[ -n "$nd" ]]; then
-      log "dedup: near-duplicate of $nd, skipping: $slug"
+      # keep the page recoverable: the run dir is wiped next run and watermarks advance
+      mkdir -p "$STATE_DIR/private/near-dups/$RUN_TS"
+      cp "$RUN_DIR/$file" "$STATE_DIR/private/near-dups/$RUN_TS/$slug.html" 2>/dev/null || true
+      log "dedup: near-duplicate of $nd, skipping: $slug (kept at $STATE_DIR/private/near-dups/$RUN_TS/$slug.html)"
       NEAR_DUP_DROPS=$((${NEAR_DUP_DROPS:-0} + 1))
       skipped=$((skipped + 1))
       continue

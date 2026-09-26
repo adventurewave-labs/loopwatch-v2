@@ -13,6 +13,8 @@ if [[ ! -f "$CONF" ]]; then
   echo "FATAL: no config at $CONF — run: mkdir -p \"$CONFIG_HOME\" && cp \"$ROOT_DIR/loopwatch.conf.example\" \"$CONF\"" >&2
   exit 1
 fi
+# OTel export is opt-in from the conf only: ignore OTEL_* the user exports for other tools
+unset OTEL_EXPORT_DIR OTEL_EXPORTER_OTLP_ENDPOINT OTEL_EXPORTER_OTLP_HEADERS
 # shellcheck disable=SC1090
 source "$CONF"
 

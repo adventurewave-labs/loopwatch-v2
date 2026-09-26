@@ -83,7 +83,8 @@ if [[ "$MODE" != "--live" ]]; then
   got="$(jq -c '[.pages[].slug] | sort' "$RUN/run-meta.json")"
   [[ "$got" == "$want" ]] || fail "pages differ: got $got want $want"
   for slug in $(jq -r '.pages[].slug' "$RUN/run-meta.json"); do
-    [[ -z "$(bash -c "source '$SRC_ROOT/lib/publish.sh'; html_problem '$RUN/pages/$slug.html'")" ]] || fail "golden page now fails the validator: $slug"
+    prob="$(bash -c "source '$SRC_ROOT/lib/publish.sh'; html_problem '$RUN/pages/$slug.html'")" || fail "validator could not run on $slug"
+    [[ -z "$prob" ]] || fail "golden page now fails the validator: $slug ($prob)"
   done
   jq -e --argjson c "$GOLD_COST" '.validator_drops == 0 and .postscan_drops == 0 and .pages == 3
         and .model == "haiku+sonnet" and ((.cost_usd - $c) | fabs) < 0.000001' <<< "$L" >/dev/null || fail "ledger differs from golden: $L"

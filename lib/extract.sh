@@ -11,13 +11,17 @@
 # Produces $RUN_DIR/run-meta.json + $RUN_DIR/pages/*.html in the publisher's shape.
 
 # Spotlighting: every piece of collected data is fenced in tags the system prompt names
-# as data. The fence tag itself is neutralized inside the data so content cannot close it.
-fence() { sed -E 's#</(file|excerpt|context|candidates)>#<\\/\1>#g'; }
+# as data. Inside the data, ANY opening or closing form of a fence tag (any case, spaces,
+# attributes: "</FILE >", "<Excerpt id=...>") has its "<" turned into "&lt;", so content can
+# neither close a fence nor forge a new block. Case-folding is spelled out in bracket
+# classes because BSD sed has no I flag.
+FENCE_TAGS='[Ff][Ii][Ll][Ee]|[Ee][Xx][Cc][Ee][Rr][Pp][Tt]|[Cc][Oo][Nn][Tt][Ee][Xx][Tt]|[Cc][Aa][Nn][Dd][Ii][Dd][Aa][Tt][Ee][Ss]'
+fence() { sed -E "s#<([[:space:]]*/?[[:space:]]*)($FENCE_TAGS)([^A-Za-z0-9_-]|\$)#\\&lt;\\1\\2\\3#g"; }
 
 build_triage_input() {
   local f rel
   {
-    echo "<context>"; jq . "$RUN_DIR/bundle/context.json"; echo "</context>"
+    echo "<context>"; jq . "$RUN_DIR/bundle/context.json" | fence; echo "</context>"
     while IFS= read -r f; do
       rel="${f#"$RUN_DIR"/}"
       echo "<file path=\"$rel\">"
@@ -28,7 +32,8 @@ build_triage_input() {
   # Per-run schema: evidence.file must be one of THIS run's paths (enum), so the model
   # cannot cite a path it merely saw mentioned inside a transcript.
   find "$RUN_DIR/bundle/transcripts" "$RUN_DIR/bundle/git" -type f 2>/dev/null | sort \
-    | sed "s#^$RUN_DIR/##" | jq -R . | jq -s . > "$RUN_DIR/bundle-paths.json"
+    | while IFS= read -r f; do printf '%s\n' "${f#"$RUN_DIR"/}"; done \
+    | jq -R . | jq -s . > "$RUN_DIR/bundle-paths.json"
   jq --slurpfile p "$RUN_DIR/bundle-paths.json" \
     '.properties.candidates.items.properties.evidence.items.properties.file.enum = $p[0]' \
     "$ROOT_DIR/schemas/triage.schema.json" > "$RUN_DIR/triage.schema.json"
@@ -37,7 +42,7 @@ build_triage_input() {
 build_writer_input() {
   local f
   {
-    echo "<context>"; jq . "$RUN_DIR/bundle/context.json"; echo "</context>"
+    echo "<context>"; jq . "$RUN_DIR/bundle/context.json" | fence; echo "</context>"
     echo "<candidates>"; jq '.candidates' "$RUN_DIR/candidates.json" | fence; echo "</candidates>"
     for f in "$RUN_DIR"/excerpts/*.txt; do
       [[ -f "$f" ]] || continue
@@ -51,12 +56,23 @@ build_writer_input() {
 render_pages() {
   local slug
   mkdir -p "$RUN_DIR/pages"
-  jq -c '(.structured_output.pages // [])[] | select(type == "object")' "$RUN_DIR/extract.json" 2>/dev/null \
+  # One well-formed page per slug, decided once, so the HTML files and run-meta can never
+  # describe different pages: objects only, string body_html, valid slug, first slug wins.
+  # A malformed page is dropped on its own instead of aborting the run.
+  jq -c '[(.structured_output.pages // [])[]
+          | select(type == "object" and (.body_html | type) == "string"
+                   and ((.slug // "") | type == "string" and test("^[a-z0-9][a-z0-9-]{2,79}$")))]
+         | reduce .[] as $p ([]; if any(.[]; .slug == $p.slug) then . else . + [$p] end)' \
+     "$RUN_DIR/extract.json" > "$RUN_DIR/writer-pages.json" 2>/dev/null || echo '[]' > "$RUN_DIR/writer-pages.json"
+  local raw kept
+  raw="$(jq '(.structured_output.pages // []) | length' "$RUN_DIR/extract.json" 2>/dev/null || echo 0)"
+  kept="$(jq 'length' "$RUN_DIR/writer-pages.json")"
+  [[ "$raw" == "$kept" ]] || log "writer: dropped $(( raw - kept )) malformed or duplicate-slug page(s)"
+  jq -c '.[]' "$RUN_DIR/writer-pages.json" \
   | while IFS= read -r row; do
-      slug="$(jq -r '.slug // "" | tostring' <<< "$row")"
-      [[ "$slug" =~ ^[a-z0-9][a-z0-9-]{2,79}$ ]] || { log "writer: dropped a page with an invalid slug"; continue; }
+      slug="$(jq -r '.slug' <<< "$row")"
       jq -r --arg date "$RUN_DATE" '
-        (.title // "" | @html) as $t
+        (.title // "" | tostring | @html) as $t
         | "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>" + $t + "</title>\n<style>\n"
           + "  :root { color-scheme: dark; }\n  body { margin:0; background:#0f1115; color:#d7dae0; font:16px/1.6 -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif; }\n"
           + "  main { max-width:780px; margin:0 auto; padding:48px 24px; }\n  h1 { font-size:1.6rem; line-height:1.3; margin:0 0 8px; }\n"
@@ -66,17 +82,16 @@ render_pages() {
           + "  table { border-collapse:collapse; } td, th { border:1px solid #232838; padding:4px 8px; }\n"
           + "  ul, ol { padding-left:1.2em; }\n  footer { margin-top:48px; padding-top:16px; border-top:1px solid #232838; color:#8b93a7; font-size:.8rem; }\n"
           + "</style>\n</head>\n<body><main>\n<h1>" + $t + "</h1>\n"
-          + "<div class=\"meta\">" + ($date | @html) + " · " + (.category // "" | @html) + " · " + (.source // "" | @html) + "</div>\n"
+          + "<div class=\"meta\">" + ($date | @html) + " · " + (.category // "" | tostring | @html) + " · " + (.source // "" | tostring | @html) + "</div>\n"
           + (.body_html // "") + "\n"
-          + "<footer>" + ($date | @html) + " · " + (.source // "" | @html) + " · generated by loopwatch</footer>\n</main></body>\n</html>"
+          + "<footer>" + ($date | @html) + " · " + (.source // "" | tostring | @html) + " · generated by loopwatch</footer>\n</main></body>\n</html>"
       ' <<< "$row" > "$RUN_DIR/pages/$slug.html"
     done
   jq --slurpfile t "$RUN_DIR/triage-meta.json" '
     {run_date: $t[0].run_date, digest_summary: $t[0].digest_summary, highlights: $t[0].highlights,
-     pages: [(.structured_output.pages // [])[] | select(type == "object")
-             | {candidate_id, slug, title, category, tags: (.tags // []), summary, source,
-                file: ("pages/" + (.slug // "" | tostring) + ".html")}]}' \
-    "$RUN_DIR/extract.json" > "$RUN_DIR/run-meta.json"
+     pages: [.[] | {candidate_id, slug, title, category, tags: (.tags // []), summary, source,
+                    file: ("pages/" + .slug + ".html")}]}' \
+    "$RUN_DIR/writer-pages.json" > "$RUN_DIR/run-meta.json"
 }
 
 # triage result: .structured_output (schema-enforced); a JSON object in .result is

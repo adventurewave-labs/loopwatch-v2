@@ -55,8 +55,15 @@ run_claude() {
   args=(-p --model "$model" --output-format json --tools ""
         --system-prompt "$(cat "$sys_file")"
         --json-schema "$(jq -c . "$schema_file")")
+  # The isolation guarantee rests on these: --tools "" removes built-in tools, and
+  # --strict-mcp-config stops user-configured MCP servers (whose tools may be pre-allowed)
+  # from loading. A CLI without them fails closed instead of silently running with tools.
+  local req
+  for req in --tools --json-schema --system-prompt --strict-mcp-config; do
+    claude_supports "$req" || { DIE_REASON=cli_unsupported; die "claude CLI lacks $req (needed for tool-free structured mode); upgrade claude"; }
+  done
+  args+=(--strict-mcp-config)
   if claude_supports --no-session-persistence; then args+=(--no-session-persistence); fi
-  if claude_supports --strict-mcp-config;      then args+=(--strict-mcp-config); fi
   if [[ -n "$budget" ]] && claude_supports --max-budget-usd; then args+=(--max-budget-usd "$budget"); fi
   if [[ -n "${CLAUDE_EXTRA_ARGS:-}" ]]; then
     # shellcheck disable=SC2206

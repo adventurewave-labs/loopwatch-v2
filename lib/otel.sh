@@ -10,6 +10,8 @@
 #                 gen_ai.provider.name=anthropic, gen_ai.request.model, gen_ai.usage.*_tokens
 #   Spans carry counts, models, costs and outcomes only: never prompt, bundle or page text.
 #
+#   Set these in loopwatch.conf. Ambient OTEL_* variables from the shell are ignored, so a
+#   collector configured for other tools never receives loopwatch traces by accident.
 #   OTEL_EXPORT_DIR                write <dir>/<run_id>.otlp.json (one ExportTraceServiceRequest)
 #   OTEL_EXPORTER_OTLP_ENDPOINT    also POST it to <endpoint>/v1/traces (standard OTel env var;
 #   OTEL_EXPORTER_OTLP_HEADERS     "k=v,k2=v2" headers, e.g. an API key; 5s timeout)
@@ -93,16 +95,28 @@ otel_export() {
     printf '%s\n' "$payload" > "$OTEL_EXPORT_DIR/$run_id.otlp.json" || log "WARN: otel file export failed"
   fi
   if [[ -n "${OTEL_EXPORTER_OTLP_ENDPOINT:-}" ]]; then
-    local -a hdr=(-H "Content-Type: application/json")
-    local kv
-    if [[ -n "${OTEL_EXPORTER_OTLP_HEADERS:-}" ]]; then
-      while IFS= read -r kv || [[ -n "$kv" ]]; do
-        [[ "$kv" == *=* ]] && hdr+=(-H "${kv%%=*}: ${kv#*=}")
-      done < <(printf '%s' "$OTEL_EXPORTER_OTLP_HEADERS" | tr ',' '\n')
-    fi
-    local code
+    # Headers (usually an API key) go through a 0600 file read by `curl -H @file`, never argv,
+    # where any local user could read them via ps or /proc. Parsed per the OTel spec:
+    # comma-separated key=value, whitespace trimmed, values percent-decoded.
+    local hfile kv k v code
+    hfile="$(mktemp "${TMPDIR:-/tmp}/loopwatch-otel.XXXXXX")" || { log "WARN: otel header file"; return 0; }
+    chmod 600 "$hfile"
+    {
+      echo "Content-Type: application/json"
+      if [[ -n "${OTEL_EXPORTER_OTLP_HEADERS:-}" ]]; then
+        while IFS= read -r kv || [[ -n "$kv" ]]; do
+          [[ "$kv" == *=* ]] || continue
+          k="$(printf '%s' "${kv%%=*}" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+          v="$(printf '%s' "${kv#*=}" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+          v="$(printf '%s' "$v" | sed 's/%\([0-9A-Fa-f][0-9A-Fa-f]\)/\\x\1/g')"; v="$(printf '%b' "$v")"
+          [[ -n "$k" && "$k" != *[!A-Za-z0-9_-]* ]] || { log "WARN: skipping malformed OTLP header name"; continue; }
+          printf '%s: %s\n' "$k" "$v"
+        done < <(printf '%s' "$OTEL_EXPORTER_OTLP_HEADERS" | tr ',' '\n')
+      fi
+    } > "$hfile"
     code="$(printf '%s' "$payload" | curl -sS -o /dev/null -w '%{http_code}' --max-time 5 \
-              -X POST "${hdr[@]}" --data-binary @- "${OTEL_EXPORTER_OTLP_ENDPOINT%/}/v1/traces" 2>/dev/null || true)"
+              -X POST -H "@$hfile" --data-binary @- "${OTEL_EXPORTER_OTLP_ENDPOINT%/}/v1/traces" 2>/dev/null || true)"
+    rm -f "$hfile"
     [[ "$code" == 2* ]] || log "WARN: OTLP export to collector returned ${code:-no answer}"
   fi
   return 0
