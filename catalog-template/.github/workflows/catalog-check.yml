@@ -5,12 +5,18 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
       - name: server fails closed, enforces auth, blocks traversal
@@ -26,7 +32,7 @@ jobs:
       - name: generated pages carry no script or external loads (defense in depth)
         run: |
           if [ -d site/pages ] || [ -d site/digests ]; then
-            if grep -rliE '<script|<iframe|<object|<embed|[[:space:]]on[a-z]+[[:space:]]*=' site/pages site/digests 2>/dev/null; then
+            if grep -rliE '<script|<iframe|<object|<embed|<[^<>]*[[:space:]/]on[a-z]+[[:space:]]*=' site/pages site/digests 2>/dev/null; then
               echo "unsafe markup found (files above)"; exit 1
             fi
           fi

@@ -886,5 +886,32 @@ STUB_PAGES=grounding lw
 test -f "$SITE/pages/$YEAR/invented-helm-page.html" || fail "GROUNDING=off must not drop"
 ok "GROUNDING=off disables the guard"
 
+# ═════════════════════════════════════════════════════════════════════════
+setup "CI supply chain: repo workflows pass the policy; a risky workflow is caught"
+bash "$SRC_ROOT/test/ci-policy.sh" > "$W/policy.txt" 2>&1 || fail "repo workflows violate the policy: $(cat "$W/policy.txt")"
+cat > "$W/risky.yml" <<'EOF2'
+name: risky
+on:
+  pull_request_target:
+jobs:
+  x:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo "${{ github.event.pull_request.title }}"
+EOF2
+if bash "$SRC_ROOT/test/ci-policy.sh" "$W/risky.yml" > "$W/risky.txt" 2>&1; then fail "risky workflow passed the policy"; fi
+for r in "R1 unpinned" "R2 no top-level permissions" "R3 checkout without persist" "R4 pull_request_target" "R4 attacker-controlled" "R5 1 job"; do
+  grep -q "$r" "$W/risky.txt" || fail "policy missed: $r ($(cat "$W/risky.txt"))"
+done
+# catalog CI's markup scan: neutralized (escaped) handlers are text, a raw one is not
+pat="$(grep -oE "grep -rliE '[^']+'" "$SRC_ROOT/catalog-template/.github/workflows/catalog-check.yml" | sed -E "s/^grep -rliE '//; s/'\$//")"
+[[ -n "$pat" ]] || fail "could not read the catalog markup pattern"
+printf '<p>&lt;img src=x onerror=alert(1)&gt; is the classic probe</p>\n' > "$W/escaped.html"
+printf '<p><img src=x onerror=alert(1)></p>\n' > "$W/raw.html"
+if grep -qiE "$pat" "$W/escaped.html"; then fail "catalog CI would reject a page that only quotes a handler as text"; fi
+grep -qiE "$pat" "$W/raw.html" || fail "catalog CI must reject a raw handler"
+ok "workflows pinned + least-privilege; 6 risky patterns caught; catalog markup scan tells escaped text from a raw handler"
+
 echo
 echo "PASS — $N_CASES cases green"
