@@ -222,7 +222,13 @@ build_rules
 ensure_catalog
 
 log "collecting deltas -> $RUN_DIR"
+canary_init
 collect_all
+n_bundle="$(find "$RUN_DIR/bundle/transcripts" "$RUN_DIR/bundle/git" -type f 2>/dev/null | wc -l | tr -d ' ')"
+if ! why="$(canary_verify "$n_bundle")"; then
+  DIE_REASON=canary_leak; die "privacy self-test failed after collection: $why (nothing sent to a model)"
+fi
+CANARY_STATUS=ok
 log "bundle: $((BUNDLE_BYTES / 1024))KB (cap ${MAX_BUNDLE_KB}KB, trimmed ${TRIMMED_BYTES}B), activity $(activity_bytes)B"
 
 if [[ "$SKIP_EMPTY" == "true" ]] && ! has_activity; then
@@ -235,6 +241,9 @@ if [[ "$SKIP_EMPTY" == "true" ]] && ! has_activity; then
 fi
 
 run_extraction
+if ! why="$(canary_verify 0)"; then
+  DIE_REASON=canary_leak; die "privacy self-test failed after extraction: $why"
+fi
 
 META="$RUN_DIR/run-meta.json"
 validate_meta "$META"

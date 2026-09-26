@@ -801,5 +801,39 @@ if (HOME="$W/evalhome" "$LW_BASH" "$W/src/test/eval/run-eval.sh" > "$W/eval.txt"
 grep -q "prompts/schemas changed (prompt_version $pv2) but the golden was recorded under $pv" "$W/eval.txt" || fail "eval message: $(head -3 "$W/eval.txt")"
 ok "prompt_version $pv on ledger + all spans; a prompt edit -> $pv2 and the offline eval refuses the stale golden"
 
+# ═════════════════════════════════════════════════════════════════════════
+setup "privacy self-test: per-run canary + model-input scan"
+lw --dry-run
+jq -e '.canary == "ok" and .canary_streams >= 1' <(ledger_last) >/dev/null || fail "ledger canary: $(ledger_last | jq -c '{canary, canary_streams}')"
+if grep -rqi "lw-canary\|LWCANARY" "$LW_STATE/run"; then fail "canary line leaked into the run dir: $(grep -rli LWCANARY "$LW_STATE/run" | head -2)"; fi
+ok "canary ran through $(ledger_last | jq .canary_streams) scrub stream(s) and left no trace"
+# a broken rule set (the 'key' and 'github' secret rules lost) must be caught BEFORE any model call
+mkdir -p "$W/src"; cp -R "$SRC_ROOT/bin" "$SRC_ROOT/lib" "$SRC_ROOT/prompts" "$SRC_ROOT/schemas" "$SRC_ROOT/site" "$SRC_ROOT/VERSION" "$W/src/"
+sed -i.bak -e '/\["key",/d' -e '/\["github",/d' "$W/src/lib/redact.sh"
+printf '%s\n' "$(jq -nc '{type:"user",cwd:"/Users/dev/src/turbo-flow",message:{role:"user",content:"Rotated the deploy key and moved it into the vault; the ingest workers now read it at start-up instead of from the env, which also removes it from crash dumps and pod specs."}}')" >> "$TX"
+: > "$CALLS"
+if "$LW_BASH" "$W/src/bin/loopwatch-run.sh" --dry-run 2> "$W/broken.log"; then fail "a scrubber that lets a canary through must fail the run"; fi
+grep -q "privacy self-test failed after collection: a canary secret survived scrubbing" "$W/broken.log" || fail "reason: $(tail -3 "$W/broken.log")"
+[[ "$(calls)" == 0 ]] || fail "no model call may happen after a canary leak"
+jq -e '.status == "failed" and .skipped_reason == "canary_leak"' <(ledger_last) >/dev/null || fail "ledger: $(ledger_last)"
+ok "scrubber missing its key/github rules: canary caught it, 0 model calls, failed closed"
+# a collector path that skips scrub_all: unscrubbed secret must never reach the model
+cp "$SRC_ROOT/lib/redact.sh" "$W/src/lib/redact.sh"
+sed -i.bak 's/} | scrub_all > "\$out"/} | cat > "$out"/' "$W/src/lib/collect.sh"
+grep -q '} | cat > "$out"' "$W/src/lib/collect.sh" || fail "test setup: could not bypass scrub in the copy"
+printf '%s\n' "$(jq -nc '{type:"user",cwd:"/Users/dev/src/turbo-flow",message:{role:"user",content:"Temporary token for the staging ingest API is sk-live0123456789abcdefXYZ; decided to scope it to read-only and expire it in 24h because the backfill only needs reads."}}')" >> "$TX"
+: > "$CALLS"
+if "$LW_BASH" "$W/src/bin/loopwatch-run.sh" --dry-run 2> "$W/bypass.log"; then fail "a collector that bypasses scrub_all must fail the run"; fi
+grep -q "only 0 of 1 bundle file(s) went through scrub_all" "$W/bypass.log" || fail "reason: $(tail -3 "$W/bypass.log")"
+[[ "$(calls)" == 0 ]] || fail "unscrubbed data reached a model"
+ok "collector bypassing the scrubber: caught before any model call"
+# input scan, independently: a rule-matching string in the model input stops the call
+bash -c "RUN_DIR='$W'; source '$SRC_ROOT/lib/common.sh'; source '$SRC_ROOT/lib/redact.sh'; RULES_JSON='$LW_STATE/private/rules.json'
+  printf 'ok text\n' > '$W/in1.txt'; input_scan '$W/in1.txt' || exit 3
+  printf 'key sk-abcdefghijklmnop1234\n' > '$W/in2.txt'; if input_scan '$W/in2.txt' > '$W/scan.txt'; then exit 4; fi" \
+  || fail "input_scan misjudged (rc $?)"
+[[ "$(cat "$W/scan.txt")" == key ]] || fail "input_scan should name the rule: $(cat "$W/scan.txt")"
+ok "input_scan passes clean text, blocks a secret and names the rule"
+
 echo
 echo "PASS — $N_CASES cases green"

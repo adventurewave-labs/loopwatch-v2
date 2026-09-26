@@ -190,6 +190,10 @@ run_extraction() {
   budget_a="$(jq -n --argjson a "$TRIAGE_BUDGET_USD" --argjson t "$BUDGET_USD" '[$a, $t] | min')"
 
   build_triage_input
+  local leak
+  if ! leak="$(input_scan "$RUN_DIR/triage-input.txt")"; then
+    DIE_REASON=input_leak; die "triage input matches redaction rules ($leak): unscrubbed data would reach the model"
+  fi
   log "stage A triage: model=$TRIAGE_MODEL budget=\$$budget_a input=$(( $(file_size "$RUN_DIR/triage-input.txt") / 1024 ))KB"
   if ! call_stage triage "$TRIAGE_MODEL" "${TRIAGE_FALLBACK_MODEL:-}" "$ROOT_DIR/prompts/triage.md" "$RUN_DIR/triage-input.txt" "$RUN_DIR/triage.schema.json" "$budget_a"; then
     case "$CLAUDE_LAST_SUBTYPE" in
@@ -225,6 +229,9 @@ run_extraction() {
   fi
 
   build_writer_input
+  if ! leak="$(input_scan "$RUN_DIR/writer-input.txt")"; then
+    DIE_REASON=input_leak; die "writer input matches redaction rules ($leak): unscrubbed data would reach the model"
+  fi
   log "stage B writing: model=$MODEL budget=\$$budget_b input=$(( $(file_size "$RUN_DIR/writer-input.txt") / 1024 ))KB"
   if ! call_stage extract "$MODEL" "${FALLBACK_MODEL:-}" "$ROOT_DIR/prompts/extract.md" "$RUN_DIR/writer-input.txt" "$ROOT_DIR/schemas/pages.schema.json" "$budget_b"; then
     case "$CLAUDE_LAST_SUBTYPE" in

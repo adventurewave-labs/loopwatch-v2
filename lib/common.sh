@@ -190,11 +190,14 @@ ledger_append() {
     --argjson vdrops "${VALIDATOR_DROPS:-0}" \
     --argjson ndrops "${NEAR_DUP_DROPS:-0}" \
     --arg pv "${PROMPT_VERSION:-}" \
+    --arg canary "${CANARY_STATUS:-}" \
+    --argjson cstreams "$( [[ -f "${RUN_DIR:-/nonexistent}/.canary-streams" ]] && wc -l < "$RUN_DIR/.canary-streams" | tr -d ' ' || echo 0)" \
     --arg sbskip "${STAGE_B_SKIP:-}" \
     --argjson dry "$([[ "${DRY_RUN:-false}" == "true" ]] && echo true || echo false)" '
     {
       ts: $ts, repo: "loopwatch", target: $target,
       prompt_version: (if $pv == "" then null else $pv end),
+      canary: (if $canary == "" then null else $canary end), canary_streams: $cstreams,
       model: ((map(.model) | unique | join("+")) | if . == "" then null else . end),
       in:      (map(.in)       | add // 0),
       cached:  (map(.cached)   | add // 0),

@@ -59,8 +59,56 @@ build_rules() {
 
 scrub_all() {
   [[ -n "${RULES_JSON:-}" && -f "$RULES_JSON" ]] || build_rules
-  jq -rR --slurpfile rules "$RULES_JSON" \
-    'reduce $rules[0][] as $r (.; gsub($r.re; $r.repl; $r.flags))'
+  if [[ -n "${CANARY_ID:-}" ]]; then
+    # Runtime self-test: every scrubbed stream carries a line of per-run canary secrets
+    # (shaped to hit several built-in rules) through the SAME jq call as the real data.
+    # canary_strip removes that line afterwards and records a leak if any canary survived.
+    { canary_line; cat; } | jq -rR --slurpfile rules "$RULES_JSON" \
+      'reduce $rules[0][] as $r (.; gsub($r.re; $r.repl; $r.flags))' | canary_strip
+  else
+    jq -rR --slurpfile rules "$RULES_JSON" \
+      'reduce $rules[0][] as $r (.; gsub($r.re; $r.repl; $r.flags))'
+  fi
+}
+
+# ── per-run canary (privacy pipeline self-test) ─────────────────────────
+# CANARY_ID: "LWCANARY" + 8 random uppercase hex, fresh every run; it appears nowhere but in
+# the canary line, so finding it anywhere after scrubbing is proof of a leak.
+canary_init() {
+  CANARY_ID="LWCANARY$(od -An -tx1 -N4 /dev/urandom | tr -d ' \n' | tr 'a-f' 'A-F')"
+  : > "$RUN_DIR/.canary-streams"; rm -f "$RUN_DIR/.canary-leak"
+}
+canary_line() {
+  printf '@@lw-canary@@ sk-%s0123456789 ghp_%sABCDEFGH AKIA%s token=%s1234 lw-%s@canary.invalid Bearer %sabcdefghijkl\n' \
+    "$CANARY_ID" "$CANARY_ID" "$CANARY_ID" "$CANARY_ID" "$CANARY_ID" "$CANARY_ID"
+}
+canary_strip() {
+  awk -v id="$CANARY_ID" -v leak="$RUN_DIR/.canary-leak" -v seen="$RUN_DIR/.canary-streams" '
+    index($0, "@@lw-canary@@") == 1 { print "1" >> seen; if (index($0, id)) print $0 >> leak; next }
+    { print }'
+}
+# canary_verify <expect-streams>: fails (1) with a reason when a canary survived scrubbing,
+# when the id shows up anywhere in the run dir, or when bundle files exist that never went
+# through scrub_all.
+canary_verify() {
+  local want="$1" got
+  [[ -n "${CANARY_ID:-}" ]] || return 0
+  if [[ -s "$RUN_DIR/.canary-leak" ]]; then echo "a canary secret survived scrubbing"; return 1; fi
+  got="$(wc -l < "$RUN_DIR/.canary-streams" | tr -d ' ')"
+  if [[ "$got" -lt "$want" ]]; then echo "only $got of $want bundle file(s) went through scrub_all"; return 1; fi
+  if grep -rlF --exclude=.canary-leak "$CANARY_ID" "$RUN_DIR" >/dev/null 2>&1; then
+    local hit; hit="$(grep -rlF --exclude=.canary-leak "$CANARY_ID" "$RUN_DIR" | head -1)"
+    echo "canary id found in ${hit#"$RUN_DIR"/}"; return 1
+  fi
+  return 0
+}
+
+# input_scan <file>: the text about to be sent to a model must hold no rule hit at all
+# (scrub replaced every match). A hit means data reached the model input without scrubbing.
+input_scan() {
+  local hits
+  hits="$(postscan_hits "$1")"
+  [[ -z "$hits" ]] || { printf '%s' "$hits" | tr '\n' ',' | sed 's/,$//'; return 1; }
 }
 
 # postscan_text <file>: prints the kinds of the rules that match (one per line)
