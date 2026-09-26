@@ -1028,5 +1028,14 @@ lw --dry-run
 grep -q "ingest architecture decided" "$LW_STATE/run/run-meta.json" || fail "highlights lost in run-meta"
 ok "string highlights split into items (bullets/numbering stripped); run-meta keeps them"
 
+# ═════════════════════════════════════════════════════════════════════════
+setup "triage recheck drops by position: an invalid candidate reusing a valid id does not take it down"
+STUB_TRIAGE=dupid lw --dry-run
+grep -q "triage: dropped candidate(s) at index \[1\]" "$LWLOG" || fail "invalid candidate not dropped: $(grep triage: "$LWLOG")"
+grep -q "stage=extract" "$CALLS" || fail "the valid candidate c1 must survive and reach the writer"
+jq -e '.candidates | length == 1 and .[0].title == "Turbo-Flow ingest: CronJob + work queue"' "$LW_STATE/run/candidates.json" >/dev/null \
+  || fail "candidates: $(jq -c '[.candidates[].title]' "$LW_STATE/run/candidates.json")"
+ok "invalid duplicate at index 1 dropped; the valid c1 kept and written"
+
 echo
 echo "PASS — $N_CASES cases green"

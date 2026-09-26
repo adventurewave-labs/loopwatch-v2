@@ -8,7 +8,7 @@
 #   STUB_CALLS        file that gets one line per model invocation
 #   STUB_INPUTS       dir: each call's stdin is saved there as <stage>-<n>.txt
 #   STUB_PAGES        one (default) | none | unsafe | unsafe2 | client | category | two | paraphrase | malformed | grounding — what the writer returns
-#   STUB_TRIAGE       one (default) | none | garbage | traversal    — what triage returns
+#   STUB_TRIAGE       one (default) | none | garbage | traversal | dupid    — what triage returns
 #   STUB_TRIAGE_COST  cost the triage stage reports (default 0.03)
 #   STUB_FAIL         budget | budget0 | crash                       — simulate a failed call (budget0: error result, exit 0)
 #   STUB_MARKER       text planted in the persisted session transcript (self-ingestion test)
@@ -106,6 +106,10 @@ if [[ "$stage" == "triage" ]]; then
       cands="$(jq -nc --arg f "${first:-bundle/transcripts/missing.txt}" '[{id:"c1", title:"Turbo-Flow ingest: CronJob + work queue",
         category:"infra/kubernetes", why:"architecture decision with tradeoffs",
         evidence:[{file:$f, start_line:2, end_line:3}, {file:"../../etc/passwd", start_line:1, end_line:5}]}]')" ;;
+    dupid)   # a valid c1 followed by an INVALID candidate that reuses id c1 (title too short)
+      cands="$(jq -nc --arg f "${first:-bundle/transcripts/missing.txt}" '[{id:"c1", title:"Turbo-Flow ingest: CronJob + work queue",
+        category:"infra/kubernetes", why:"architecture decision with tradeoffs", evidence:[{file:$f, start_line:2, end_line:3}]},
+        {id:"c1", title:"x", category:"ideas", why:"w", evidence:[{file:$f, start_line:1, end_line:2}]}]')" ;;
     traversal)
       cands='[{"id":"c1","title":"x","category":"ideas","why":"x","evidence":[{"file":"bundle/../../../etc/passwd","start_line":1,"end_line":9},{"file":"/etc/hosts","start_line":1,"end_line":9}]}]' ;;
   esac

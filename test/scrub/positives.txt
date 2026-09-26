@@ -1,58 +1,58 @@
-# Positive samples for the scrubber: one per line, "<kind>|<text containing the secret>".
+# Positive samples for the scrubber: one per line, "<kind>|<rule that must catch it>|<text containing the secret>".
 # Secrets are FAKE and split with "{}" (removed at test time) so this file never contains a
 # contiguous credential-shaped string (keeps push protection and secret scanners quiet).
 # The secret itself is the part between [[ and ]]; the test requires it to be gone.
-aws-akia|aws_access_key_id = [[AKIA{}Z7ZQ3EXAMPLE4XYZ]]
-aws-asia|temporary creds [[ASIA{}Q4ZJ5EXAMPLE7ABC]] from STS
-aws-secret|aws_secret_access_key = [[wJalr{}XUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY]]
-github-classic|token [[ghp_{}aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5]]
-github-oauth|[[gho_{}aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5]]
-github-fine|[[github_pat_{}11ABCDEFG0123456789_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRS]]
-gitlab-pat|export GITLAB_TOKEN=[[glpat-{}xY7_abcDEF123ghiJKL45]]
-slack-bot|SLACK_BOT_TOKEN=[[xoxb-{}1234567890-1234567890123-AbCdEfGhIjKlMnOpQrStUvWx]]
-slack-app|[[xapp-{}1-A0123BCDEFG-1234567890123-0123456789abcdef0123456789abcdef0123456789abcdef]]
-slack-webhook|webhook [[https://hooks.slack{}.com/services/T01234567/B01234567/aBcDeFgHiJkLmNoPqRsTuVwX]]
-stripe-live|[[sk_live_{}51HxYzABCDEFghijklmnopQRSTuv]]
-stripe-restricted|[[rk_live_{}51HxYzABCDEFghijklmnopQRSTuv]]
-openai-project|OPENAI_API_KEY=[[sk-proj-{}AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-abcdefghij]]
-anthropic|ANTHROPIC_API_KEY=[[sk-ant-api03-{}AbCdEfGhIjKlMnOpQrStUvWxYz0123456789-abcdefghijklmnopqrstuvwxyzABCDEFGHIJ-AA]]
-google-api|[[AIza{}SyA1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q]]
-gcp-sa-key|"private_key": "[[-----BEGIN {}PRIVATE KEY-----]]\nMIIEvQIBADANBg"
-rsa-key|[[-----BEGIN RSA {}PRIVATE KEY-----]]
-openssh-key|[[-----BEGIN OPENSSH {}PRIVATE KEY-----]]
-pgp-key|[[-----BEGIN PGP {}PRIVATE KEY BLOCK-----]]
-jwt|Authorization: [[eyJhbGciOiJIUzI1NiJ9{}.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U]]
-npm|//registry.npmjs.org/:_authToken=[[npm_{}AbCdEfGhIjKlMnOpQrStUvWxYz0123456789]]
-pypi|password = [[pypi-{}AgEIcHlwaS5vcmcCJGFiY2RlZmdoLWlqa2wtbW5vcC1xcnN0LXV2d3h5ejEyMzQ1AAIqWzMsImFiY2RlZiJdAAAGIGFiY2RlZmdo]]
-twilio|TWILIO_API_KEY=[[SK{}0123456789abcdef0123456789abcdef]]
-sendgrid|[[SG.{}ngeVfQFYQlKU0ufo8x5d1A.TwL2iGABf9DHoTf-09kqeF8tAmbihYzrnopKc-1s5cr]]
-huggingface|HF_TOKEN=[[hf_{}AbCdEfGhIjKlMnOpQrStUvWxYz01234567]]
-digitalocean|[[dop_v1_{}0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef]]
-azure-storage|DefaultEndpointsProtocol=https;AccountName=acct;AccountKey=[[Eby8vdM02xNOcqFlqUwJPLlmEtlCD{}XJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==]];
-shopify|[[shpat_{}0123456789abcdef0123456789abcdef]]
-telegram|bot token [[1234567890:{}AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw]]
-postgres-url|DATABASE_URL=[[postgres://admin:s3cr3t{}Pass@]]db.internal:5432/app
-mongodb-url|[[mongodb+srv://svc:Zx9{}Qw8Er7@]]cluster0.mongodb.net/prod
-basic-auth-url|curl [[https://deploy:hunter2{}pass@]]ci.internal/hook
-databricks|DATABRICKS_TOKEN=[[dapi{}0123456789abcdef0123456789abcdef]]
-grafana-cloud|[[glc_{}eyJvIjoiMTIzNDU2IiwibiI6InN0YWNrIiwiayI6ImFiY2RlZiJ9]]
-newrelic|NEW_RELIC_API_KEY=[[NRAK-{}ABCDEFGHIJKLMNOPQRSTUVWXYZ0]]
-atlassian|JIRA_TOKEN=[[ATATT3x{}FfGF0abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUV=12AB34CD]]
-docker-hub|[[dckr_pat_{}AbCdEfGhIjKlMnOpQrStUvWxYz0]]
-pulumi|PULUMI_ACCESS_TOKEN=[[pul-{}0123456789abcdef0123456789abcdef01234567]]
-supabase|[[sbp_{}0123456789abcdef0123456789abcdef01234567]]
-doppler|[[dp.st.{}prd.AbCdEfGhIjKlMnOpQrStUvWxYz0123456789ABCD]]
-linear|LINEAR_API_KEY=[[lin_api_{}AbCdEfGhIjKlMnOpQrStUvWxYz0123456789ABCD]]
-generic-assign|api_key: "[[4f9d8c7b6a5e4d3c2b1a0f9e8d7c6b5a{}]]"
-generic-password|password=[[Tr0ub4dor{}&3horse]]
+aws-akia|aws|aws_access_key_id = [[AKIA{}Z7ZQ3EXAMPLE4XYZ]]
+aws-asia|aws|temporary creds [[ASIA{}Q4ZJ5EXAMPLE7ABC]] from STS
+aws-secret|aws|aws_secret_access_key = [[wJalr{}XUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY]]
+github-classic|github|token [[ghp_{}aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5]]
+github-oauth|github|[[gho_{}aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5]]
+github-fine|github|[[github_pat_{}11ABCDEFG0123456789_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRS]]
+gitlab-pat|gitlab|export GITLAB_TOKEN=[[glpat-{}xY7_abcDEF123ghiJKL45]]
+slack-bot|slack|SLACK_BOT_TOKEN=[[xoxb-{}1234567890-1234567890123-AbCdEfGhIjKlMnOpQrStUvWx]]
+slack-app|slack|[[xapp-{}1-A0123BCDEFG-1234567890123-0123456789abcdef0123456789abcdef0123456789abcdef]]
+slack-webhook|slack|webhook [[https://hooks.slack{}.com/services/T01234567/B01234567/aBcDeFgHiJkLmNoPqRsTuVwX]]
+stripe-live|stripe|[[sk_live_{}51HxYzABCDEFghijklmnopQRSTuv]]
+stripe-restricted|stripe|[[rk_live_{}51HxYzABCDEFghijklmnopQRSTuv]]
+openai-project|openai|OPENAI_API_KEY=[[sk-proj-{}AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-abcdefghij]]
+anthropic|anthropic|ANTHROPIC_API_KEY=[[sk-ant-api03-{}AbCdEfGhIjKlMnOpQrStUvWxYz0123456789-abcdefghijklmnopqrstuvwxyzABCDEFGHIJ-AA]]
+google-api|google|[[AIza{}SyA1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q]]
+gcp-sa-key|pem|"private_key": "[[-----BEGIN {}PRIVATE KEY-----]]\nMIIEvQIBADANBg"
+rsa-key|pem|[[-----BEGIN RSA {}PRIVATE KEY-----]]
+openssh-key|pem|[[-----BEGIN OPENSSH {}PRIVATE KEY-----]]
+pgp-key|pem|[[-----BEGIN PGP {}PRIVATE KEY BLOCK-----]]
+jwt|jwt|Authorization: [[eyJhbGciOiJIUzI1NiJ9{}.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U]]
+npm|npm|//registry.npmjs.org/:_authToken=[[npm_{}AbCdEfGhIjKlMnOpQrStUvWxYz0123456789]]
+pypi|pypi|password = [[pypi-{}AgEIcHlwaS5vcmcCJGFiY2RlZmdoLWlqa2wtbW5vcC1xcnN0LXV2d3h5ejEyMzQ1AAIqWzMsImFiY2RlZiJdAAAGIGFiY2RlZmdo]]
+twilio|twilio|TWILIO_API_KEY=[[SK{}0123456789abcdef0123456789abcdef]]
+sendgrid|sendgrid|[[SG.{}ngeVfQFYQlKU0ufo8x5d1A.TwL2iGABf9DHoTf-09kqeF8tAmbihYzrnopKc-1s5cr]]
+huggingface|huggingface|HF_TOKEN=[[hf_{}AbCdEfGhIjKlMnOpQrStUvWxYz01234567]]
+digitalocean|digitalocean|[[dop_v1_{}0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef]]
+azure-storage|azure|DefaultEndpointsProtocol=https;AccountName=acct;AccountKey=[[Eby8vdM02xNOcqFlqUwJPLlmEtlCD{}XJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==]];
+shopify|shopify|[[shpat_{}0123456789abcdef0123456789abcdef]]
+telegram|telegram|bot token [[1234567890:{}AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw]]
+postgres-url|conn-creds|DATABASE_URL=[[postgres://admin:s3cr3t{}Pass@]]db.internal:5432/app
+mongodb-url|conn-creds|[[mongodb+srv://svc:Zx9{}Qw8Er7@]]cluster0.mongodb.net/prod
+basic-auth-url|conn-creds|curl [[https://deploy:hunter2{}pass@]]ci.internal/hook
+databricks|databricks|DATABRICKS_TOKEN=[[dapi{}0123456789abcdef0123456789abcdef]]
+grafana-cloud|grafana|[[glc_{}eyJvIjoiMTIzNDU2IiwibiI6InN0YWNrIiwiayI6ImFiY2RlZiJ9]]
+newrelic|newrelic|NEW_RELIC_API_KEY=[[NRAK-{}ABCDEFGHIJKLMNOPQRSTUVWXYZ0]]
+atlassian|atlassian|JIRA_TOKEN=[[ATATT3x{}FfGF0abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUV=12AB34CD]]
+docker-hub|docker|[[dckr_pat_{}AbCdEfGhIjKlMnOpQrStUvWxYz0]]
+pulumi|pulumi|PULUMI_ACCESS_TOKEN=[[pul-{}0123456789abcdef0123456789abcdef01234567]]
+supabase|supabase|[[sbp_{}0123456789abcdef0123456789abcdef01234567]]
+doppler|doppler|[[dp.st.{}prd.AbCdEfGhIjKlMnOpQrStUvWxYz0123456789ABCD]]
+linear|linear|LINEAR_API_KEY=[[lin_api_{}AbCdEfGhIjKlMnOpQrStUvWxYz0123456789ABCD]]
+generic-assign|assignment|api_key: "[[4f9d8c7b6a5e4d3c2b1a0f9e8d7c6b5a{}]]"
+generic-password|assignment|password=[[Tr0ub4dor{}&3horse]]
 # bare forms: the same credentials in prose, with no KEY= assignment to lean on
-gitlab-bare|leaked [[glpat-{}xY7_abcDEF123ghiJKL45]] in the CI log
-npm-bare|the token [[npm_{}AbCdEfGhIjKlMnOpQrStUvWxYz0123456789]] expired
-pypi-bare|uploaded with [[pypi-{}AgEIcHlwaS5vcmcCJGFiY2RlZmdoLWlqa2wtbW5vcC1xcnN0LXV2d3h5ejEyMzQ1AAIqWzMsImFiY2RlZiJdAAAGIGFiY2RlZmdo]] yesterday
-hf-bare|used [[hf_{}AbCdEfGhIjKlMnOpQrStUvWxYz01234567]] for the download
-databricks-bare|workspace token [[dapi{}0123456789abcdef0123456789abcdef]] rotated
-newrelic-bare|key [[NRAK-{}ABCDEFGHIJKLMNOPQRSTUVWXYZ0]] in the dashboard
-atlassian-bare|rotated [[ATATT3x{}FfGF0abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUV=12AB34CD]] today
-pulumi-bare|old [[pul-{}0123456789abcdef0123456789abcdef01234567]] revoked
-linear-bare|pasted [[lin_api_{}AbCdEfGhIjKlMnOpQrStUvWxYz0123456789ABCD]] by mistake
-twilio-bare|the [[SK{}0123456789abcdef0123456789abcdef]] key
+gitlab-bare|gitlab|leaked [[glpat-{}xY7_abcDEF123ghiJKL45]] in the CI log
+npm-bare|npm|the token [[npm_{}AbCdEfGhIjKlMnOpQrStUvWxYz0123456789]] expired
+pypi-bare|pypi|uploaded with [[pypi-{}AgEIcHlwaS5vcmcCJGFiY2RlZmdoLWlqa2wtbW5vcC1xcnN0LXV2d3h5ejEyMzQ1AAIqWzMsImFiY2RlZiJdAAAGIGFiY2RlZmdo]] yesterday
+hf-bare|huggingface|used [[hf_{}AbCdEfGhIjKlMnOpQrStUvWxYz01234567]] for the download
+databricks-bare|databricks|workspace token [[dapi{}0123456789abcdef0123456789abcdef]] rotated
+newrelic-bare|newrelic|key [[NRAK-{}ABCDEFGHIJKLMNOPQRSTUVWXYZ0]] in the dashboard
+atlassian-bare|atlassian|rotated [[ATATT3x{}FfGF0abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUV=12AB34CD]] today
+pulumi-bare|pulumi|old [[pul-{}0123456789abcdef0123456789abcdef01234567]] revoked
+linear-bare|linear|pasted [[lin_api_{}AbCdEfGhIjKlMnOpQrStUvWxYz0123456789ABCD]] by mistake
+twilio-bare|twilio|the [[SK{}0123456789abcdef0123456789abcdef]] key
