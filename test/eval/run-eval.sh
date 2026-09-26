@@ -25,7 +25,7 @@ MODE="${1:-offline}"
 LW_BASH="${LW_BASH:-$BASH}"
 
 W="$(mktemp -d "${TMPDIR:-/tmp}/loopwatch-eval.XXXXXX")"
-trap 'rm -rf "$W"' EXIT
+[[ -n "${LW_EVAL_KEEP:-}" ]] && echo "  (keeping $W)" || trap 'rm -rf "$W"' EXIT
 fail() { echo "FAIL [eval $MODE]: $*" >&2; [[ -f "$W/run.log" ]] && tail -20 "$W/run.log" >&2; exit 1; }
 ok()   { echo "  ok: $*"; }
 
@@ -100,10 +100,10 @@ if [[ "$MODE" == "offline" ]]; then
     prob="$(bash -c "source '$SRC_ROOT/lib/publish.sh'; html_problem '$RUN/pages/$slug.html'")" || fail "validator could not run on $slug"
     [[ -z "$prob" ]] || fail "golden page now fails the validator: $slug ($prob)"
   done
-  jq -e --argjson c "$GOLD_COST" '.validator_drops == 0 and .postscan_drops == 0 and .pages == 3
+  jq -e --argjson c "$GOLD_COST" --argjson gp "$GOLD_PAGES" '.validator_drops == 0 and .postscan_drops == 0 and .pages == $gp
         and .model == "haiku+sonnet" and ((.cost_usd - $c) | fabs) < 0.000001' <<< "$L" >/dev/null || fail "ledger differs from golden: $L"
   jq -e --slurpfile t "$FIX/recorded/triage.json" '.digest_summary == $t[0].structured_output.digest_summary' "$RUN/run-meta.json" >/dev/null || fail "digest differs"
-  ok "3 golden pages rendered and validator-clean; 0 drops; digest identical; ledger cost \$$GOLD_COST exact"
+  ok "$GOLD_PAGES golden page(s) rendered and validator-clean; 0 drops; digest identical; ledger cost \$$GOLD_COST exact"
   echo "PASS — offline eval"
 else
   echo "  prompt_version: $PV_NOW (golden: $PV_GOLD)"

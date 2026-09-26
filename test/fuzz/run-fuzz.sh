@@ -27,9 +27,14 @@ jq -s '{structured_output: {pages: map({candidate_id: "c1", slug: ("fz-" + .id),
    "$W/cases.jsonl" > "$W/extract.json"
 echo '{"run_date":"2026-01-01","digest_summary":"x","highlights":[]}' > "$W/triage-meta.json"
 
-# layer 1: the allowlist gate on the raw body
-gate1="$(bash -c "source '$SRC_ROOT/lib/extract.sh'; jq -r \"\$BODY_GATE_JQ\"' select(.body | body_ok) | .id' '$W/cases.jsonl'" | LC_ALL=C sort)"
-n_gate_pass="$(printf '%s' "$gate1" | grep -c . || true)"
+# layer 1: the allowlist control exactly as render_pages applies it: neutralize (escape every
+# "<" that does not open a bare allowed tag), then the gate must accept every result.
+mkdir -p "$W/l1"
+bash -c "source '$SRC_ROOT/lib/extract.sh'; jq -c \"\$BODY_GATE_JQ\"' {id, body: (.body | neutralize)} | . + {ok: (.body | body_ok)}' '$W/cases.jsonl'" > "$W/l1.jsonl"
+n_gate_fail="$(jq -s 'map(select(.ok | not)) | length' "$W/l1.jsonl")"
+[[ "$n_gate_fail" == 0 ]] || fail "layer 1: $n_gate_fail neutralized bodies still hold non-allowlisted markup"
+jq -s '[.[] | {candidate_id: "c1", slug: ("fz-" + .id), title: "fuzz", category: "ideas", tags: [], summary: "fuzz", source: "fuzz", body_html: .body}]' "$W/l1.jsonl" > "$W/l1/pages.json"
+RUN_DIR="$W/l1" RUN_DATE=2026-01-01 bash -c "source '$SRC_ROOT/lib/extract.sh'; render_page_files '$W/l1/pages.json'"
 # layer 2: render every case (gate bypassed) through the real renderer, judge with html_problem
 jq '.structured_output.pages' "$W/extract.json" > "$W/all-pages.json"
 RUN_DIR="$W" RUN_DATE=2026-01-01 bash -c "
@@ -45,9 +50,8 @@ grep -q $'\tvalidator-error$' "$W/verdicts.tsv" && fail "validator crashed on: $
 awk -F'\t' '$2 == "PASS" { print $1 }' "$W/verdicts.tsv" | LC_ALL=C sort > "$W/passers.txt"
 n_pass="$(wc -l < "$W/passers.txt" | tr -d ' ')"
 echo "  $(cat "$W/gen.txt")"
-echo "  layer 1 (markup allowlist) blocked $(( n_cases - n_gate_pass ))/$n_cases"
+echo "  layer 1 (markup allowlist: neutralize + gate): $n_cases/$n_cases reduced to bare allowed tags only"
 echo "  layer 2 (blocklist validator, alone) blocked $(( n_cases - n_pass ))/$n_cases; $n_pass passed through"
-[[ "$n_gate_pass" == 0 ]] || fail "layer 1 let $n_gate_pass active case(s) through: $(printf '%s' "$gate1" | head -5 | tr '\n' ' ')"
 
 if [[ "$MODE" == "ci" ]]; then
   grep -v '^#' "$HERE/inert-allowlist.txt" | LC_ALL=C sort > "$W/allow.txt" || true
@@ -73,7 +77,11 @@ if [[ -n "$bypass" ]]; then
     jq -r --arg id "$id" --arg why "$why" 'select(.id == $id) | "    BYPASS \(.id) [\(.variant)] \($why): \(.body)"' "$W/cases.jsonl"; done <<< "$bypass" >&2
   fail "$(wc -l <<< "$bypass" | tr -d ' ') validator bypass(es): passed the validator AND were active in Chromium"
 fi
-echo "  oracle: all $n_pass passers are inert in Chromium (no script, no request, no navigation)"
+echo "  oracle: all $n_pass layer-2 passers are inert in Chromium (no script, no request, no navigation)"
+NODE_PATH="${NODE_PATH:-$(npm root -g 2>/dev/null)}" node "$HERE/oracle.cjs" "$W/l1/pages" > "$W/l1.json"
+l1_active="$(jq -r 'to_entries[] | select(.value != null) | "\(.key) \(.value)"' "$W/l1.json")"
+[[ -z "$l1_active" ]] || fail "layer 1 output ACTIVE in Chromium: $(head -3 <<< "$l1_active")"
+echo "  oracle: all $n_cases layer-1 (neutralized) pages are inert in Chromium"
 if [[ "$MODE" == "--update-allowlist" ]]; then
   { echo "# ids of fuzz cases that pass the validator and were PROVEN inert in headless Chromium"
     echo "# (regenerate: test/fuzz/run-fuzz.sh --update-allowlist). One 12-hex id per line."

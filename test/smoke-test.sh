@@ -256,6 +256,7 @@ setup "privacy: client name, Stripe key, connection string, inline script (R-6, 
 printf '%s\n' 'Globex( Corporation)?' 'Initech=>ACME-2' > "$H/.config/loopwatch/redact.list"
 printf '%s\n' "$(jq -nc '{type:"user",cwd:"/Users/dev/src/turbo-flow",message:{role:"user",content:"Shipped the rollout for Globex Corporation and initech today. Stripe key sk_live_ABCDEFGHIJKLMNOPQRSTUVWX, db postgres://admin:hunter2pass@db.internal:5432/app, google AIzaSyA1234567890abcdefghijklmnopqrstuv, VERCEL_TOKEN=abc123def456ghi789"}}')" >> "$TX"
 export STUB_PAGES=unsafe
+conf 'NEAR_DUP_THRESHOLD=0'   # the stub pages share a summary; this case is about markup, not dedup
 lw
 for leak in "Globex" "initech" "sk_live_ABCDEFGH" "hunter2pass" "AIzaSyA1234567890" "abc123def456ghi789"; do
   if grep -rqi -- "$leak" "$LW_STATE/run/bundle" "$SITE" "$LW_STATE/runs.jsonl"; then fail "leaked into bundle/site/ledger: $leak"; fi
@@ -263,13 +264,18 @@ done
 grep -rq "ACME-2" "$LW_STATE/run/bundle" || fail "custom replacement not applied"
 ok "client names + 4 secret kinds redacted before the model; nothing in site/ or ledger"
 test -f "$SITE/pages/$YEAR/safe-page-one.html" || fail "safe page should publish"
-for bad in inline-script-page onload-handler-page external-img-page iframe-page leaked-stripe-page; do
-  if [[ -f "$SITE/pages/$YEAR/$bad.html" ]]; then fail "unsafe page published: $bad"; fi
-  if jq -e --arg s "$bad" '.entries | any(.slug == $s)' "$SITE/manifest.json" >/dev/null; then fail "unsafe page in manifest: $bad"; fi
+# active markup is neutralized (escaped to visible text), not trusted: the pages publish INERT
+for inert in inline-script-page onload-handler-page external-img-page iframe-page; do
+  f="$SITE/pages/$YEAR/$inert.html"
+  test -f "$f" || fail "neutralized page should publish: $inert"
+  [[ -z "$(bash -c "source '$SRC_ROOT/lib/publish.sh'; html_problem '$f'")" ]] || fail "published page is not inert: $inert"
 done
-if grep -rqiE "<script|onerror=" "$SITE/pages" "$SITE/digests"; then fail "script content reached site/"; fi
-jq -e '.validator_drops == 4 and .postscan_drops == 1 and .pages == 1' <(ledger_last) >/dev/null || fail "drop counts wrong: $(ledger_last)"
-ok "validator dropped script/on*/external-src/iframe pages; postscan dropped the Stripe page; counts in ledger"
+grep -q '&lt;script>alert(1)&lt;/script>' "$SITE/pages/$YEAR/inline-script-page.html" || fail "script should survive only as escaped text"
+test ! -f "$SITE/pages/$YEAR/leaked-stripe-page.html" || fail "Stripe page must be dropped by postscan"
+if grep -rqiE "<script|<img|<iframe" "$SITE/pages" "$SITE/digests"; then fail "raw active tag reached site/"; fi
+jq -e '.validator_drops == 0 and .postscan_drops == 1 and .pages == 5' <(ledger_last) >/dev/null || fail "counts wrong: $(ledger_last | jq -c '{validator_drops, postscan_drops, pages}')"
+grep -q "writer: escaped 6 stray '<'" "$LWLOG" || fail "neutralization not logged"
+ok "script/on*/external-src/iframe markup neutralized to inert text (pages kept); postscan dropped the Stripe page"
 
 # ═════════════════════════════════════════════════════════════════════════
 setup "privacy: model re-introduces a client name -> page dropped, digest withheld"
@@ -556,13 +562,17 @@ ok "unknown PR state: no PR opened, run failed with gh_pr_list_failed"
 # ═════════════════════════════════════════════════════════════════════════
 setup "review: validator bypasses (quoted >, entities, tab-split scheme, url(), object, meta refresh)"
 export STUB_PAGES=unsafe2
+conf 'NEAR_DUP_THRESHOLD=0'
 lw
 test -f "$SITE/pages/$YEAR/safe-page-two.html" || fail "safe page (escaped markup in code, bare < in text, table) should publish"
+grep -q '<table><tr><th>k</th><td>v</td></tr></table><br/>' "$SITE/pages/$YEAR/safe-page-two.html" || fail "allowed markup must be kept verbatim"
 for bad in quoted-gt-page entity-js-page tab-js-page css-url-page object-page meta-refresh-page https-link-page import-page; do
-  if [[ -f "$SITE/pages/$YEAR/$bad.html" ]]; then fail "bypass published: $bad"; fi
+  f="$SITE/pages/$YEAR/$bad.html"
+  [[ ! -f "$f" ]] || [[ -z "$(bash -c "source '$SRC_ROOT/lib/publish.sh'; html_problem '$f'")" ]] || fail "bypass published ACTIVE: $bad"
+  body() { awk '/^<div class="meta">/ {on=1; next} /^<footer>/ {on=0} on' "$1"; }
+  if [[ -f "$f" ]] && body "$f" | grep -qiE '<(img|a|div|object|meta|style)[ />]'; then fail "raw tag survived in $bad: $(body "$f" | head -2)"; fi
 done
-jq -e '.validator_drops == 8' <(ledger_last) >/dev/null || fail "expected 8 validator drops: $(ledger_last)"
-ok "all 8 bypass variants dropped; the safe page survives"
+ok "all 8 bypass variants neutralized to inert text; allowed markup kept verbatim"
 
 setup "review: client name in category, PR body stays clean"
 printf '%s\n' 'Globex( Corporation)?' > "$H/.config/loopwatch/redact.list"
@@ -725,7 +735,8 @@ ok "NEAR_DUP_THRESHOLD=0 disables it"
 # ═════════════════════════════════════════════════════════════════════════
 setup "malformed writer output: bad page dropped alone; duplicate slug keeps first page consistently"
 STUB_PAGES=malformed lw
-grep -q "writer: dropped 2 malformed or duplicate-slug page(s)" "$LWLOG" || fail "drop not logged: $(grep writer "$LWLOG")"
+grep -q "validator: dropped writer page #1 (schema: \$.pages\[1\]" "$LWLOG" || fail "schema drop not logged: $(grep -E 'writer|validator' "$LWLOG")"
+grep -q "writer: dropped 1 malformed or duplicate-slug page(s)" "$LWLOG" || fail "duplicate drop not logged: $(grep -E 'writer|validator' "$LWLOG")"
 P="$SITE/pages/$YEAR/k8s-cronjob-queue-ingest.html"
 grep -q "BODY ONE" "$P" && grep -q "<title>Title ONE</title>" "$P" || fail "first page should win"
 if grep -q "TWO" "$P"; then fail "second duplicate-slug page overwrote the HTML"; fi
@@ -834,6 +845,29 @@ bash -c "RUN_DIR='$W'; source '$SRC_ROOT/lib/common.sh'; source '$SRC_ROOT/lib/r
   || fail "input_scan misjudged (rc $?)"
 [[ "$(cat "$W/scan.txt")" == key ]] || fail "input_scan should name the rule: $(cat "$W/scan.txt")"
 ok "input_scan passes clean text, blocks a secret and names the rule"
+
+# ═════════════════════════════════════════════════════════════════════════
+setup "schema hardening: tightened schemas are re-checked locally, per candidate / per page"
+# the jq validator itself, against the real schemas
+v() { jq -r --slurpfile s "$SRC_ROOT/schemas/$1" "$(bash -c "source '$SRC_ROOT/lib/common.sh'; printf '%s' \"\$JSV_JQ\"")"' jsv($s[0]; "$")[]' <<< "$2"; }
+good='{"pages":[{"candidate_id":"c1","slug":"k8s-cronjob-queue","title":"CronJob + queue ingest","category":"infra/kubernetes","tags":["k8s"],"summary":"CronJob feeds a queue; idempotent workers.","source":"claude-code:turbo-flow","body_html":"<h2>Decision</h2><p>CronJob + queue; workers must be idempotent.</p>"}]}'
+[[ -z "$(v pages.schema.json "$good")" ]] || fail "valid page rejected: $(v pages.schema.json "$good")"
+bad="$(jq -c '.pages[0] |= (.extra = 1 | .tags = ["Bad Tag"] | .source = "http://evil" | .body_html = "x" | .candidate_id = "zz")' <<< "$good")"
+errs="$(v pages.schema.json "$bad")"
+for want in "unexpected property extra" 'tags\[0\]: does not match' "source: does not match" "body_html: shorter than 50" "candidate_id: does not match"; do
+  grep -q "$want" <<< "$errs" || fail "validator missed: $want (got: $errs)"
+done
+tri='{"digest_summary":"d","highlights":[],"candidates":[{"id":"c1","title":"A long enough title","category":"ideas","why":"w","evidence":[{"file":"f","start_line":0,"end_line":2.5}]}]}'
+errs="$(v triage.schema.json "$tri")"
+grep -q "start_line: below 1" <<< "$errs" && grep -q "end_line: expected integer" <<< "$errs" || fail "line bounds/integers: $errs"
+ok "jq JSON-Schema validator: valid page passes; 5 page violations and 2 evidence violations reported"
+# in the pipeline: an oversized highlight list is a top-level triage violation -> fail closed
+export STUB_HIGHLIGHT="$(printf 'h%.0s' $(seq 1 450))"
+if lw; then fail "triage violating its schema at top level must fail the run"; fi
+unset STUB_HIGHLIGHT
+jq -e '.skipped_reason == "triage_schema_violation"' <(ledger_last) >/dev/null || fail "ledger: $(ledger_last)"
+grep -q 'highlights\[1\]: longer than 400' "$LWLOG" || fail "reason not logged: $(grep FATAL "$LWLOG")"
+ok "top-level triage violation fails closed (triage_schema_violation)"
 
 echo
 echo "PASS — $N_CASES cases green"

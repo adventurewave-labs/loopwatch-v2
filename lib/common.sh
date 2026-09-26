@@ -27,6 +27,43 @@ now_local_iso() { date +%Y-%m-%dT%H:%M:%S%z; }
 # non-alphanumeric char replaced by '-'>. Verified on 2.1.283 (docs/revival-notes.md).
 encode_project_dir() { printf '%s' "$1" | sed 's/[^A-Za-z0-9]/-/g'; }
 
+# JSV_JQ: a JSON-Schema validator in jq for the subset loopwatch's schemas use (type,
+# required, additionalProperties:false, properties, items, enum, min/maxLength, pattern,
+# min/maxItems, minimum/maximum). The model's answer is re-checked locally against the SAME
+# schema file it was generated under, so enforcement never depends on the CLI alone.
+# usage: jq --slurpfile s schema.json "$JSV_JQ"' jsv($s[0]; "$")'  ->  [error strings]
+JSV_JQ='def jsv($s; $p):
+  . as $x
+  | (if ($s.type // null) == null then []
+     elif $s.type == "integer" then (if ($x | type) == "number" and ($x | floor) == $x then [] else ["\($p): expected integer"] end)
+     elif ($x | type) != $s.type then ["\($p): expected \($s.type), got \($x | type)"]
+     else [] end) as $te
+  | if ($te | length) > 0 then $te else
+    [ (if $s.enum then (if ($s.enum | index([$x])) then empty else "\($p): not an allowed value" end) else empty end),
+      (if ($x | type) == "string" then
+         (if $s.minLength and ($x | length) < $s.minLength then "\($p): shorter than \($s.minLength)" else empty end),
+         (if $s.maxLength and ($x | length) > $s.maxLength then "\($p): longer than \($s.maxLength)" else empty end),
+         (if $s.pattern and ($x | test($s.pattern) | not) then "\($p): does not match \($s.pattern)" else empty end)
+       else empty end),
+      (if ($x | type) == "number" then
+         (if $s.minimum and $x < $s.minimum then "\($p): below \($s.minimum)" else empty end),
+         (if $s.maximum and $x > $s.maximum then "\($p): above \($s.maximum)" else empty end)
+       else empty end),
+      (if ($x | type) == "array" then
+         (if $s.minItems and ($x | length) < $s.minItems then "\($p): fewer than \($s.minItems) items" else empty end),
+         (if $s.maxItems and ($x | length) > $s.maxItems then "\($p): more than \($s.maxItems) items" else empty end),
+         (if $s.items then ($x | to_entries[] as $e | $e.value | jsv($s.items; "\($p)[\($e.key)]")[]) else empty end)
+       else empty end),
+      (if ($x | type) == "object" then
+         (($s.required // [])[] as $r | if ($x | has($r)) then empty else "\($p): missing \($r)" end),
+         (if $s.additionalProperties == false then
+            (($x | keys[]) as $k | if (($s.properties // {}) | has($k)) then empty else "\($p): unexpected property \($k)" end)
+          else empty end),
+         (($s.properties // {}) | to_entries[] as $e
+            | if ($x | has($e.key)) then ($x[$e.key] | jsv($e.value; "\($p).\($e.key)")[]) else empty end)
+       else empty end)
+    ] end;'
+
 # prompt_version [root]: 12-hex content hash of everything that defines what the models are
 # asked (prompts/*.md) and allowed to answer (schemas/*.json), in byte order of file name.
 # Stamped on every ledger row, OTel span and eval golden, so any change in quality or cost

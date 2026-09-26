@@ -52,8 +52,11 @@ build_writer_input() {
 }
 
 # BODY_GATE_JQ: jq defs used by the markup allowlist (render_pages) and the fuzz harness.
-BODY_GATE_JQ='def body_ok: [scan("<[A-Za-z/!?][^<>]*>?")]
-  | all(test("^</?(h2|h3|h4|p|ul|ol|li|pre|code|strong|em|b|i|table|thead|tbody|tr|th|td|blockquote)>$|^<(br|hr) ?/?>$"));'
+BODY_GATE_JQ='def allowed_tail: "/?(?:h2|h3|h4|p|ul|ol|li|pre|code|strong|em|b|i|table|thead|tbody|tr|th|td|blockquote)>|(?:br|hr) ?/?>";
+  def allowed_tag: "<(?:" + allowed_tail + ")";
+  def neutralize: gsub("<(?!" + allowed_tail + ")"; "&lt;");
+  def body_ok: [scan("<[A-Za-z/!?][^<>]*>?")]
+  | all(test("^(" + allowed_tag + ")$"));'
 
 # render_page_files <pages.json>: fixed skeleton + escaped metadata + body -> pages/<slug>.html
 render_page_files() {
@@ -98,9 +101,16 @@ render_pages() {
   kept="$(jq 'length' "$RUN_DIR/writer-pages.json")"
   [[ "$raw" == "$kept" ]] || log "writer: dropped $(( raw - kept )) malformed or duplicate-slug page(s)"
   # Markup allowlist (primary control): the body may only use the bare tags the prompt
-  # allows, with NO attributes, and every other "<" that could open a tag must be escaped.
-  # Everything the blocklist validator (html_problem) looks for becomes impossible by
-  # construction; html_problem still runs on the rendered file as a second, independent layer.
+  # allows, with NO attributes. Every other "<" is escaped to "&lt;" first (so an unescaped
+  # `Array<string>` in a code sample or a stray `<script>` becomes visible text instead of
+  # markup, and the page survives); the gate below then proves only bare allowed tags remain.
+  # html_problem still runs on the rendered file as a second, independent layer.
+  local nesc
+  nesc="$(jq "$BODY_GATE_JQ"' [.[] | .body_html | [scan("<")] | length] | add // 0' "$RUN_DIR/writer-pages.json")"
+  jq "$BODY_GATE_JQ"' map(.body_html |= neutralize)' "$RUN_DIR/writer-pages.json" > "$RUN_DIR/wp.tmp" \
+    && mv "$RUN_DIR/wp.tmp" "$RUN_DIR/writer-pages.json"
+  nesc=$(( nesc - $(jq "$BODY_GATE_JQ"' [.[] | .body_html | [scan("<")] | length] | add // 0' "$RUN_DIR/writer-pages.json") ))
+  [[ "$nesc" -eq 0 ]] || log "writer: escaped $nesc stray '<' that did not open an allowed tag"
   local rejected
   rejected="$(jq -r "$BODY_GATE_JQ"' .[] | select(.body_html | body_ok | not) | .slug' "$RUN_DIR/writer-pages.json")"
   if [[ -n "$rejected" ]]; then
@@ -182,6 +192,48 @@ build_excerpts() {
     && mv "$cands.tmp" "$cands"
 }
 
+# schema_recheck_triage: re-validate triage's answer against the per-run schema it was
+# generated under. A candidate that violates it is dropped (with the reason); a violation
+# outside the candidates list fails the run like unparseable output.
+schema_recheck_triage() {
+  local errs top bad
+  errs="$(jq -r --slurpfile s "$RUN_DIR/triage.schema.json" "$JSV_JQ"' .structured_output // {} | jsv($s[0]; "$")[]' "$RUN_DIR/triage.json")"
+  # an evidence path outside the enum is already ignored per evidence item by build_excerpts
+  # (which keeps the candidate's other evidence), so it is not a reason to drop the candidate
+  errs="$(grep -Ev '^\$\.candidates\[[0-9]+\]\.evidence\[[0-9]+\]\.file: not an allowed value$' <<< "$errs" || true)"
+  [[ -n "$errs" ]] || return 0
+  top="$(grep -v '^\$\.candidates\[' <<< "$errs" || true)"
+  if [[ -n "$top" ]]; then
+    DIE_REASON=triage_schema_violation; die "triage answer violates its schema: $(head -3 <<< "$top" | tr '\n' ';')"
+  fi
+  bad="$(sed -n 's/^\$\.candidates\[\([0-9]*\)\].*/\1/p' <<< "$errs" | sort -un | tr '\n' ',' | sed 's/,$//')"
+  log "triage: dropped candidate(s) at index [$bad] that violate the schema: $(head -2 <<< "$errs" | tr '\n' ';')"
+  jq --slurpfile raw "$RUN_DIR/triage.json" --argjson bad "[$bad]" '
+    ($raw[0].structured_output.candidates // []) as $rc
+    | ([$bad[] | $rc[.].id? // empty]) as $ids
+    | .candidates |= map(select(.id as $i | $ids | index($i) | not))' "$RUN_DIR/candidates.json" > "$RUN_DIR/c.tmp" \
+    && mv "$RUN_DIR/c.tmp" "$RUN_DIR/candidates.json"
+}
+
+# schema_recheck_pages: every writer page is re-validated against the page item schema;
+# a violating page is dropped on its own (counted as a validator drop).
+schema_recheck_pages() {
+  local bad
+  bad="$(jq -r --slurpfile s "$ROOT_DIR/schemas/pages.schema.json" "$JSV_JQ"'
+    .structured_output.pages | to_entries[] | .key as $i
+    | (.value | jsv($s[0].properties.pages.items; "$.pages[\($i)]")) as $e
+    | select($e | length > 0) | "\($i)\t\($e[0])"' "$RUN_DIR/extract.json")"
+  [[ -n "$bad" ]] || return 0
+  local idx=() i why
+  while IFS=$'\t' read -r i why; do
+    log "validator: dropped writer page #$i (schema: $why)"; idx+=("$i")
+    VALIDATOR_DROPS=$(( ${VALIDATOR_DROPS:-0} + 1 ))
+  done <<< "$bad"
+  jq --argjson drop "[$(IFS=,; echo "${idx[*]}")]" '
+    .structured_output.pages |= (to_entries | map(select(.key as $k | $drop | index($k) | not)) | map(.value))' \
+    "$RUN_DIR/extract.json" > "$RUN_DIR/x.tmp" && mv "$RUN_DIR/x.tmp" "$RUN_DIR/extract.json"
+}
+
 usage_cost() { jq -s 'map(.cost_usd) | add // 0' "$RUN_DIR/usage.jsonl"; }
 
 # run_extraction: stage A, then stage B if warranted. Leaves run-meta.json.
@@ -203,6 +255,7 @@ run_extraction() {
   fi
   parse_triage > "$RUN_DIR/candidates.json" \
     || { DIE_REASON=triage_parse_error; die "triage output is not the expected JSON object (see triage.json)"; }
+  schema_recheck_triage
   jq --argjson max "$MAX_CANDIDATES" '.candidates |= .[:$max]' "$RUN_DIR/candidates.json" > "$RUN_DIR/c.tmp" \
     && mv "$RUN_DIR/c.tmp" "$RUN_DIR/candidates.json"
   build_excerpts
@@ -241,5 +294,6 @@ run_extraction() {
   fi
   jq -e '.structured_output.pages | type == "array"' "$RUN_DIR/extract.json" >/dev/null 2>&1 \
     || { DIE_REASON=no_meta; die "writing stage returned no structured pages (see extract.json)"; }
+  schema_recheck_pages
   render_pages
 }

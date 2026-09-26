@@ -20,7 +20,7 @@ await ctx.addInitScript(() => {
   }
 });
 const result = {};
-for (const f of files) {
+async function one(f) {
   const abs = path.resolve(dir, f);
   const url = 'file://' + abs;
   const page = await ctx.newPage();
@@ -57,6 +57,8 @@ for (const f of files) {
   result[f] = reason;
   await page.close();
 }
+const queue = files.slice();
+await Promise.all(Array.from({ length: 8 }, async () => { while (queue.length) await one(queue.shift()); }));
 await browser.close();
 process.stdout.write(JSON.stringify(result));
 })().catch((e) => { console.error(e); process.exit(2); });

@@ -1,61 +1,36 @@
 {
+  "type": "result",
+  "subtype": "success",
+  "is_error": false,
+  "duration_ms": 15612,
+  "num_turns": 2,
+  "result": "{\"pages\":[{\"candidate_id\":\"c1\",\"slug\":\"loopwatch-self-ingestion-root-cause-fix\",\"title\":\"Loopwatch self-ingestion: root cause and three-layer fix\",\"category\":\"agentic/debugging\",\"tags\":[\"claude-code\",\"session-persistence\",\"cost\",\"headless\",\"cli\"],\"summary\":\"Headless claude -p runs persisted full session transcripts under the encoded cwd, which the collector re-ingested the next night — compounding cost. Fixed with a flag, a pinned run dir plus exclusion patterns, and a cwd-based line filter.\",\"source\":\"claude-code:turbo-rig\",\"body_html\":\"<h2>Problem</h2><p>The nightly loop's cost grew night over night even on light workdays. Root cause: every headless invocation of <code>claude -p</code> persists its own session transcript under <code>~/.claude/projects/&lt;encoded cwd&gt;/</code>. Because the loop ran from a fresh <code>$TMPDIR/loopwatch.XXXXXX</code> each night, each run created a new project directory (e.g. <code>-private-var-folders-...-T-loopwatch-a1B2c3</code>) containing the <strong>entire input bundle</strong> it was fed — a one-word test answer produced a 231 KB transcript. The collector's glob <code>~/.claude/projects/*/*.jsonl</code> then picked up that transcript the following night, so night N+1 re-ingested night N's input. Cost compounds and stale content gets re-mined indefinitely.</p><h2>Fix — three layers</h2><ol><li><strong>Disable persistence at the source.</strong> Pass <code>--no-session-persistence</code>. Verified on claude 2.1.283: no project directory is created at all.</li><li><strong>Pin the run directory and exclude it explicitly.</strong> Always run from a fixed directory, <code>~/.local/state/loopwatch/run</code>, and exclude its encoded project dir (every non-alphanumeric character becomes <code>-</code>) plus any directory ending in <code>-loopwatch-run</code>, and the older v0.1 <code>loopwatch-XXXXXX</code> mktemp dirs, from collection.</li><li><strong>Filter by cwd as a backstop.</strong> Drop any transcript line whose <code>cwd</code> field equals the run dir. This catches a moved or renamed project directory that the path-pattern exclusion in layer 2 would miss.</li></ol><h2>Tradeoff</h2><p>Layer 2 requires a single fixed run directory, which means runs must be serialized — no concurrent nightly runs. This was already true: the existing mkdir-based lock enforces serialization, so the constraint was free in practice.</p><h2>Related decision: budget-cap failures</h2><p><code>--max-budget-usd</code> is enforced by the CLI itself: a run capped at 0.05 that would have cost 0.066 returns <code>is_error:true</code> with exit 1. Treat a budget hit as a fail-closed outcome: hold watermarks and record a ledger row with <code>skipped_reason=budget_exceeded</code>, rather than letting the same delta re-attempt and burn budget again.</p><h2>Gotchas</h2><ul><li>On macOS, <code>/var</code> is a symlink to <code>/private/var</code>, so the encoded project-dir name computed from the literal path can differ from the actual one on disk. The suffix-match exclusion (<code>-loopwatch-run</code>) exists specifically to catch this symlink variant.</li><li>Verify the fix with a regression test asserting the second night's run never contains any line from the first night's transcript.</li></ul>\"}]}",
   "structured_output": {
     "pages": [
       {
         "candidate_id": "c1",
-        "slug": "headless-claude-p-session-persistence-fix",
-        "title": "Headless claude -p persists sessions: three-layer fix for compounding re-ingestion",
-        "category": "debugging",
+        "slug": "loopwatch-self-ingestion-root-cause-fix",
+        "title": "Loopwatch self-ingestion: root cause and three-layer fix",
+        "category": "agentic/debugging",
         "tags": [
           "claude-code",
-          "cli",
+          "session-persistence",
           "cost",
-          "watermarking",
-          "headless"
+          "headless",
+          "cli"
         ],
-        "summary": "Every headless claude -p run was writing its own transcript under ~/.claude/projects, which the nightly collector then re-ingested the next night, compounding cost. Fixed with three independent layers so the bug can't come back silently.",
+        "summary": "Headless claude -p runs persisted full session transcripts under the encoded cwd, which the collector re-ingested the next night — compounding cost. Fixed with a flag, a pinned run dir plus exclusion patterns, and a cwd-based line filter.",
         "source": "claude-code:turbo-rig",
-        "body_html": "<h2>Root cause</h2><p>A nightly extraction loop got more expensive every day with no matching increase in real work. Cause: <code>claude -p</code> persists a session transcript even in headless/scripted use, under <code>~/.claude/projects/&lt;encoded-cwd&gt;/</code>. The loop ran from a fresh <code>$TMPDIR/loopwatch.XXXXXX</code> each night, so each run created a new project dir (e.g. <code>-private-var-folders-...-T-loopwatch-a1B2c3</code>) containing the <strong>entire input bundle</strong> it was fed &mdash; a one-word test reply alone produced a 231&nbsp;KB transcript. The collector's glob (<code>~/.claude/projects/*/*.jsonl</code>) then picked that transcript up on night N+1, so each run re-mined the prior night's input. Cost compounds silently because nothing errors &mdash; it just keeps growing.</p><h2>Fix: three independent layers</h2><ol><li><strong>Suppress persistence at the source.</strong> Pass <code>--no-session-persistence</code> (verified on claude 2.1.283: no project dir is created at all).</li><li><strong>Run from a fixed directory and exclude it.</strong> Always invoke from <code>~/.local/state/loopwatch/run</code> (not a fresh tmpdir), and exclude its encoded project-dir name from collection &mdash; every non-alphanumeric character in the path becomes <code>-</code> &mdash; plus anything ending in <code>-loopwatch-run</code>, and the old v0.1 <code>loopwatch-XXXXXX</code> mktemp dirs for backward compatibility.</li><li><strong>Filter by cwd field at ingestion time.</strong> Drop any transcript line whose <code>cwd</code> field equals the run dir. This is the safety net that catches a moved or renamed project dir even if layers 1&ndash;2 fail.</li></ol><p>Tradeoff of layer 2: a fixed run dir means runs must be serialized (no two loopwatch runs concurrently). An existing mkdir-based lock already enforced this, so it was free.</p><h2>Related: budget enforcement is fail-closed</h2><p><code>--max-budget-usd</code> is real and enforced: a run capped at 0.05 that actually cost 0.066 returned <code>is_error:true</code> with exit 1 rather than silently overspending. Decision: treat a budget hit as a failed run &mdash; hold watermarks and record a ledger row with <code>skipped_reason=budget_exceeded</code> &mdash; rather than advancing state, otherwise the same delta would just burn budget again next run without ever completing.</p><h2>Gotchas</h2><ul><li>On macOS, <code>/var</code> is a symlink to <code>/private/var</code>, so the path-encoded project-dir name you compute may not match what the CLI actually creates. The suffix-match rule (layer 2) exists specifically to survive this.</li><li>Verify persistence behavior against the actual CLI version in use &mdash; flag behavior was confirmed empirically on 2.1.283, not assumed from docs.</li></ul>"
-      },
-      {
-        "candidate_id": "c3",
-        "slug": "unattended-pipeline-redaction-scrub-and-fail-closed-drop",
-        "title": "Redaction for unattended pipelines: pre-model scrub + post-output scan with fail-closed drops",
-        "category": "security",
-        "tags": [
-          "privacy",
-          "redaction",
-          "pipeline-safety",
-          "shell",
-          "fail-closed"
-        ],
-        "summary": "Secrets and client names are scrubbed via a gitignored redact.list before any model sees the data, then the model's own output is re-scanned and any page that still matches gets dropped rather than published.",
-        "source": "claude-code:claude",
-        "body_html": "<h2>Pattern</h2><p>For a headless pipeline that feeds real transcripts to an LLM and publishes what comes back, redaction has to happen twice, at two different trust boundaries:</p><ul><li><strong>Before the model sees anything:</strong> a gitignored <code>redact.list</code> (patterns keyed by kind, e.g. <code>redact.list:1</code>) is compiled into regexes and applied to the bundle first. Matches are replaced with <code>[REDACTED:&lt;kind&gt;]</code> markers, never left as-is and never partially reconstructible.</li><li><strong>After the model writes output:</strong> the same scan runs again over the generated pages before publish. This is fail-closed: if a page still matches a secret pattern or a redaction-list term anywhere &mdash; body, title, summary, tags, or slug &mdash; that specific page file is deleted from the output rather than published. One bad page doesn't block the rest of the run.</li></ul><p>The list itself lives outside version control (gitignored) so the patterns that define what's sensitive never end up in a public repo alongside the tool that enforces them.</p><h2>Why both layers</h2><p>Pre-model scrubbing keeps raw secrets out of any prompt or model context in the first place &mdash; the model literally never sees them. Post-output scanning is the backstop for cases the pre-scrub missed (paraphrasing, partial reconstruction, or a pattern that only becomes recognizable once summarized). Relying on either layer alone leaves a gap: pre-scrub misses novel leaks the model itself introduces; post-scan alone would mean secrets briefly transited the model.</p><h2>README framing</h2><p>The privacy posture is stated plainly rather than implied: <em>\"Privacy is enforced, not advised\"</em> &mdash; i.e., this is a hard filter with fail-closed behavior on the publish path, not a prompt instruction the model is trusted to honor unassisted.</p><h2>Gotchas</h2><ul><li>Fail-closed means a legitimate page can be silently dropped if it happens to match a pattern coincidentally (e.g. a term that looks like a redacted client name but isn't). Worth logging drops distinctly from normal skips so false positives are discoverable.</li><li>The redaction-list file must stay out of git; if it's ever committed, the list of what's considered sensitive becomes public alongside the scrubber that's supposed to protect it.</li></ul>"
-      },
-      {
-        "candidate_id": "c4",
-        "slug": "watermark-byte-offset-correctness-bugs",
-        "title": "Byte-offset watermarking: three correctness bugs (partial lines, truncation, path leaks)",
-        "category": "infra/collection",
-        "tags": [
-          "watermarking",
-          "shell",
-          "jsonl",
-          "correctness"
-        ],
-        "summary": "Phase 1 fixed three watermark bugs in the log-collection layer: stopping at the last complete newline instead of file size, resetting on file truncation, and hashing dir keys instead of storing absolute paths.",
-        "source": "claude-code:claude",
-        "body_html": "<h2>Bugs and fixes</h2><ul><li><strong>Partial-line loss.</strong> The watermark previously advanced to the file's current size, which can land mid-line if a writer is flushing incrementally. Reading from that offset next time skips the second half of a truncated line and permanently loses it. Fix: advance the watermark only to the last complete newline seen, never past it, so a partially-written line is re-read (and completed) on the next pass instead of being silently dropped.</li><li><strong>No reset on truncation.</strong> If a source file shrinks (log rotation, a fixture being rewritten smaller) and the new size is less than the stored watermark, reading from the old offset would either fail or return garbage/wrong data. Fix: detect <code>size &lt; old_watermark</code> and reset the watermark to 0 for that file, treating it as a fresh file rather than trusting a now-invalid offset.</li><li><strong>Path leaks in git.</strong> Watermark state was originally keyed by the absolute source path, which could embed a client or project name (e.g. from a cwd-derived project directory) directly into a file that gets committed. Fix: key watermark entries by a hash of the path instead of the raw path, so committed state carries no human-readable identifying strings.</li></ul><h2>Why this matters</h2><p>Watermarking is the mechanism that makes the whole pipeline incremental and idempotent &mdash; get any one of these wrong and you either silently lose data (partial-line loss, no reset on truncation) or leak identifying information into version control (path leaks). All three are the kind of bug that looks fine in a smoke test with clean, static fixtures and only shows up against real, growing, occasionally-rotated log files.</p><h2>Gotchas</h2><ul><li>Truncation reset assumes shrink always means \"new file\" &mdash; if a source can legitimately shrink and grow back while representing the same logical stream, this will cause re-processing of old data instead of a true reset.</li><li>Hashing the key means watermark state files are no longer human-readable for debugging; keep a separate (gitignored) mapping if you need to inspect which hash corresponds to which real path.</li></ul>"
+        "body_html": "<h2>Problem</h2><p>The nightly loop's cost grew night over night even on light workdays. Root cause: every headless invocation of <code>claude -p</code> persists its own session transcript under <code>~/.claude/projects/&lt;encoded cwd&gt;/</code>. Because the loop ran from a fresh <code>$TMPDIR/loopwatch.XXXXXX</code> each night, each run created a new project directory (e.g. <code>-private-var-folders-...-T-loopwatch-a1B2c3</code>) containing the <strong>entire input bundle</strong> it was fed — a one-word test answer produced a 231 KB transcript. The collector's glob <code>~/.claude/projects/*/*.jsonl</code> then picked up that transcript the following night, so night N+1 re-ingested night N's input. Cost compounds and stale content gets re-mined indefinitely.</p><h2>Fix — three layers</h2><ol><li><strong>Disable persistence at the source.</strong> Pass <code>--no-session-persistence</code>. Verified on claude 2.1.283: no project directory is created at all.</li><li><strong>Pin the run directory and exclude it explicitly.</strong> Always run from a fixed directory, <code>~/.local/state/loopwatch/run</code>, and exclude its encoded project dir (every non-alphanumeric character becomes <code>-</code>) plus any directory ending in <code>-loopwatch-run</code>, and the older v0.1 <code>loopwatch-XXXXXX</code> mktemp dirs, from collection.</li><li><strong>Filter by cwd as a backstop.</strong> Drop any transcript line whose <code>cwd</code> field equals the run dir. This catches a moved or renamed project directory that the path-pattern exclusion in layer 2 would miss.</li></ol><h2>Tradeoff</h2><p>Layer 2 requires a single fixed run directory, which means runs must be serialized — no concurrent nightly runs. This was already true: the existing mkdir-based lock enforces serialization, so the constraint was free in practice.</p><h2>Related decision: budget-cap failures</h2><p><code>--max-budget-usd</code> is enforced by the CLI itself: a run capped at 0.05 that would have cost 0.066 returns <code>is_error:true</code> with exit 1. Treat a budget hit as a fail-closed outcome: hold watermarks and record a ledger row with <code>skipped_reason=budget_exceeded</code>, rather than letting the same delta re-attempt and burn budget again.</p><h2>Gotchas</h2><ul><li>On macOS, <code>/var</code> is a symlink to <code>/private/var</code>, so the encoded project-dir name computed from the literal path can differ from the actual one on disk. The suffix-match exclusion (<code>-loopwatch-run</code>) exists specifically to catch this symlink variant.</li><li>Verify the fix with a regression test asserting the second night's run never contains any line from the first night's transcript.</li></ul>"
       }
     ]
   },
-  "total_cost_usd": 0.1010866,
+  "total_cost_usd": 0.036351999999999995,
   "usage": {
     "input_tokens": 2,
-    "cache_creation_input_tokens": 14187,
-    "cache_read_input_tokens": 11098,
-    "output_tokens": 3371,
+    "cache_creation_input_tokens": 3919,
+    "cache_read_input_tokens": 14175,
+    "output_tokens": 1484,
     "output_tokens_details": {
       "thinking_tokens": 0
     },
@@ -65,27 +40,23 @@
     },
     "service_tier": "standard",
     "cache_creation": {
-      "ephemeral_1h_input_tokens": 14187,
+      "ephemeral_1h_input_tokens": 3919,
       "ephemeral_5m_input_tokens": 0
     },
     "inference_geo": "not_available",
     "iterations": [
       {
         "input_tokens": 2,
-        "output_tokens": 3371,
-        "cache_read_input_tokens": 11098,
-        "cache_creation_input_tokens": 14187,
+        "output_tokens": 1484,
+        "cache_read_input_tokens": 14175,
+        "cache_creation_input_tokens": 3919,
         "cache_creation": {
           "ephemeral_5m_input_tokens": 0,
-          "ephemeral_1h_input_tokens": 14187
+          "ephemeral_1h_input_tokens": 3919
         },
         "type": "message"
       }
     ],
     "speed": "standard"
-  },
-  "is_error": false,
-  "subtype": "success",
-  "duration_ms": 37385,
-  "num_turns": 2
+  }
 }
