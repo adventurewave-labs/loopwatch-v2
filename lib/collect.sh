@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # loopwatch lib — delta collection (sourced by loopwatch-run.sh; do not execute)
-# Contract: fills $RUN_DIR/bundle/{transcripts,git}/ + bundle/context.json, records each
+# Contract: fills $RUN_DIR/bundle/{transcripts,git}/ (git/ = GitHub API, lib/collect_github.sh) + bundle/context.json, records each
 # bundle file's source age in $RUN_DIR/bundle-index.tsv, and writes advanced offsets to
 # $RUN_DIR/new-watermarks.json (applied only after a successful publish or skip).
 #
@@ -157,41 +157,6 @@ collect_globs() {
   done
 }
 
-collect_git() {
-  local repo name key head last out
-  for repo in ${GIT_REPOS[@]+"${GIT_REPOS[@]}"}; do
-    if [[ ! -d "$repo/.git" ]]; then
-      log "git source missing, skipping: $(basename "$repo")"
-      continue
-    fi
-    name="$(basename "$repo")"
-    key="$(hash_key "$repo")"
-    head="$(git -C "$repo" rev-parse HEAD 2>/dev/null || true)"
-    [[ -n "$head" ]] || continue
-    last="$(jq -r --arg k "$key" '.git[$k] // ""' "$WATERMARKS")"
-
-    out="$RUN_DIR/bundle/git/${name}.log"
-    {
-      echo "=== repo: $name ==="
-      if [[ -n "$last" ]] && git -C "$repo" cat-file -e "$last" 2>/dev/null; then
-        { git -C "$repo" log "${last}..HEAD" --stat --date=short --format='%h %ad %s' 2>/dev/null || true; } \
-          | head -c "$((MAX_FILE_KB * 1024))"
-      else
-        { git -C "$repo" log --since=48.hours --stat --date=short --format='%h %ad %s' 2>/dev/null || true; } \
-          | head -c "$((MAX_FILE_KB * 1024))"
-      fi
-    } | scrub_all > "$out"
-    if [[ "$(grep -v '^=== ' "$out" | wc -c | tr -d ' ')" -lt 20 ]]; then
-      rm -f "$out"
-    else
-      printf '%s\t%s\n' "$(now_epoch)" "bundle/git/${name}.log" >> "$RUN_DIR/bundle-index.tsv"
-    fi
-    jq --arg k "$key" --arg v "$head" '.git[$k] = $v' \
-      "$RUN_DIR/new-watermarks.json" > "$RUN_DIR/nw.tmp" \
-      && mv "$RUN_DIR/nw.tmp" "$RUN_DIR/new-watermarks.json"
-  done
-}
-
 # Hard cap on the whole bundle (R-1, bug 2): drop the oldest content first until
 # the bundle fits MAX_BUNDLE_KB. Whole files go first; the boundary file keeps its tail.
 trim_bundle() {
@@ -248,7 +213,7 @@ collect_all() {
   : > "$RUN_DIR/bundle-index.tsv"
   collect_globs "claude-code" ${CLAUDE_CODE_GLOBS[@]+"${CLAUDE_CODE_GLOBS[@]}"}
   collect_globs "cowork"      ${COWORK_GLOBS[@]+"${COWORK_GLOBS[@]}"}
-  collect_git
+  collect_github
   trim_bundle
   BUNDLE_BYTES="$(bundle_bytes)"
   write_context
@@ -284,9 +249,5 @@ list_sources() {
       done < <(compgen -G "$pat" || true)
       if [[ "$found" -eq 0 ]]; then echo "  (no matches)"; fi
     done
-  done
-  echo "— git sources —"
-  for f in ${GIT_REPOS[@]+"${GIT_REPOS[@]}"}; do
-    if [[ -d "$f/.git" ]]; then echo "  ok       $f"; else echo "  MISSING  $f"; fi
   done
 }

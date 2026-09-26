@@ -14,8 +14,11 @@ COWORK_GLOBS=("$HOME/Library/Application Support/Claude/local-agent-mode-session
 # history is watermarked at its current size and never sent to the model.
 FIRST_RUN_LOOKBACK_HOURS=48
 
-# Local git repos to mine (replaced by the GitHub API source in v0.2 phase 4).
-GIT_REPOS=()
+# GitHub activity via the API (R-8) — no local clones needed. Uses your `gh` auth.
+# Each scope is "user:<login>" or "org:<org>". Commits by GITHUB_AUTHOR + merged PRs.
+GITHUB_SCOPES=("user:marcuspat" "org:adventurewave-labs" "org:creandotumatrix-labs")
+GITHUB_AUTHOR=""             # empty = the login gh is authenticated as
+GH_BIN="gh"
 
 # ── Cost (R-1, R-2) ──────────────────────────────────────────────────────
 CLAUDE_BIN="claude"          # absolute path (`which claude`) for scheduled runs
@@ -35,10 +38,12 @@ MAX_BUNDLE_KB=300            # whole-bundle cap; oldest content is trimmed first
 ACTIVITY_MIN_BYTES=2000      # below this much real content, no model call at all (provisional default)
 SKIP_EMPTY=true
 
-# ── Publish ──────────────────────────────────────────────────────────────
-SITE_DIR=""                  # catalog site/ dir inside a git working copy
-PULL=true
-PUSH=true
+# ── Publish (R-9) ────────────────────────────────────────────────────────
+# Each run commits to loopwatch/<date> in the catalog repo and opens a PR; while a
+# loopwatch PR is open, later runs add to it. Nothing is ever pushed to CATALOG_BASE.
+CATALOG_REPO="adventurewave-labs/loopwatch-catalog"
+CATALOG_BASE="main"
+# CATALOG_DIR="$HOME/.local/state/loopwatch/catalog"   # tool-managed clone (default)
 
 # ── Privacy (R-5, R-6, R-7) ──────────────────────────────────────────────
 # Allowlist of project dirs to collect. EMPTY = COLLECT NOTHING (fails closed).

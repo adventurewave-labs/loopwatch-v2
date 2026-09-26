@@ -33,10 +33,16 @@ source "$CONF"
 : "${MAX_BUNDLE_KB:=300}"
 : "${ACTIVITY_MIN_BYTES:=2000}"
 : "${FIRST_RUN_LOOKBACK_HOURS:=48}"
-: "${PULL:=true}"
-: "${PUSH:=true}"
 : "${SKIP_EMPTY:=true}"
-: "${SITE_DIR:=}"
+: "${GH_BIN:=gh}"
+: "${CATALOG_REPO:=adventurewave-labs/loopwatch-catalog}"
+: "${CATALOG_BASE:=main}"
+: "${CATALOG_DIR:=$STATE_DIR/catalog}"
+: "${GITHUB_AUTHOR:=}"
+if [[ -z "${GITHUB_SCOPES+x}" ]]; then
+  GITHUB_SCOPES=("user:marcuspat" "org:adventurewave-labs" "org:creandotumatrix-labs")
+fi
+PREFLIGHT_NEEDS_GH=true
 : "${REDACT_LIST:=$CONFIG_HOME/redact.list}"
 : "${SITE_VISIBILITY:=}"
 : "${ALLOW_PUBLIC:=false}"
@@ -79,10 +85,8 @@ command -v "$CLAUDE_BIN" >/dev/null 2>&1 || {
   exit 1
 }
 
-[[ -n "$SITE_DIR" ]] || { echo "FATAL: SITE_DIR is not set in $CONF" >&2; exit 1; }
+SITE_DIR="$CATALOG_DIR/site"
 MANIFEST="$SITE_DIR/manifest.json"
-[[ -f "$MANIFEST" ]] || { echo "FATAL: manifest not found: $MANIFEST" >&2; exit 1; }
-REPO_DIR="${REPO_DIR:-$(git -C "$SITE_DIR" rev-parse --show-toplevel 2>/dev/null || true)}"
 
 # Watermarks are local state (never committed): hashed source keys -> offsets/shas.
 WATERMARKS="$STATE_DIR/watermarks.json"
@@ -98,6 +102,10 @@ source "$ROOT_DIR/lib/redact.sh"
 source "$ROOT_DIR/lib/preflight.sh"
 # shellcheck disable=SC1091
 source "$ROOT_DIR/lib/extract.sh"
+# shellcheck disable=SC1091
+source "$ROOT_DIR/lib/collect_github.sh"
+# shellcheck disable=SC1091
+source "$ROOT_DIR/lib/catalog.sh"
 
 if [[ "$PREFLIGHT_ONLY" == "true" ]]; then
   preflight
@@ -106,6 +114,7 @@ fi
 
 if [[ "$LIST_ONLY" == "true" ]]; then
   list_sources
+  list_github_sources
   exit 0
 fi
 
@@ -158,6 +167,7 @@ if ! preflight > "$RUN_DIR/preflight.txt" 2>&1; then
   fi
 fi
 build_rules
+ensure_catalog
 
 log "collecting deltas -> $RUN_DIR"
 collect_all
@@ -189,7 +199,6 @@ if [[ "$DRY_RUN" == "true" ]]; then
   exit 0
 fi
 
-[[ -n "$REPO_DIR" ]] || die "SITE_DIR is not inside a git repo and REPO_DIR is unset"
 publish_run "$META"
 cp "$RUN_DIR/new-watermarks.json" "$WATERMARKS"
 finish published "" "${INSTALLED_PAGES:-0}"

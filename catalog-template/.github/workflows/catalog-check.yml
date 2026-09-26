@@ -1,0 +1,27 @@
+name: catalog-check
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: manifest is valid JSON with the v1 shape
+        run: |
+          jq -e '.version == 1 and (.entries | type == "array") and (.digests | type == "array")' site/manifest.json
+      - name: every manifest path exists
+        run: |
+          jq -r '.entries[].path, .digests[].path' site/manifest.json | while read -r p; do
+            test -f "site/$p" || { echo "missing: site/$p"; exit 1; }
+          done
+      - name: generated pages carry no script or external loads (defense in depth)
+        run: |
+          if [ -d site/pages ] || [ -d site/digests ]; then
+            if grep -rliE '<script|<iframe|<object|<embed|[[:space:]]on[a-z]+[[:space:]]*=' site/pages site/digests 2>/dev/null; then
+              echo "unsafe markup found (files above)"; exit 1
+            fi
+          fi

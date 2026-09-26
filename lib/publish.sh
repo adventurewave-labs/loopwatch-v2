@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# loopwatch lib — validation + publishing (sourced by loopwatch-run.sh; do not execute)
+# loopwatch lib — validation, digest, manifest merge (sourced by loopwatch-run.sh; do not execute)
 
 validate_meta() {
   local meta="$1"
@@ -117,11 +117,6 @@ publish_run() {
   local year installed=0 skipped=0
   year="$(date +%Y)"
 
-  if [[ "$PULL" == "true" ]]; then
-    git -C "$REPO_DIR" pull --rebase --autostash 2>/dev/null \
-      || log "WARN: git pull failed (offline / no upstream?) — continuing with local state"
-  fi
-
   # dedup against manifest + install pages
   : > "$RUN_DIR/installed-slugs.txt"
   local slug file
@@ -176,18 +171,15 @@ publish_run() {
   jq -e . "$RUN_DIR/manifest.new" >/dev/null || die "manifest merge produced invalid JSON"
   cp "$RUN_DIR/manifest.new" "$MANIFEST"
 
-  # watermarks are local state now (bug 7) — the caller advances them after this returns
-  git -C "$REPO_DIR" add -A "$SITE_DIR" 2>/dev/null || true
+  # commit on the run branch, then push it and open/update the PR (lib/catalog.sh).
+  # Watermarks are local state (bug 7); the caller advances them only after this returns.
+  catalog_git add -A site
   INSTALLED_PAGES="$installed"
-  if git -C "$REPO_DIR" diff --cached --quiet; then
+  if catalog_git diff --cached --quiet; then
     log "nothing to commit"
     return 0
   fi
-  git -C "$REPO_DIR" commit -q -m "loopwatch: $RUN_DATE — ${installed} page(s), digest"
-  if [[ "$PUSH" == "true" ]]; then
-    git -C "$REPO_DIR" push -q 2>/dev/null \
-      || log "WARN: push failed — commit is local; next run will retry the push"
-  fi
-  INSTALLED_PAGES="$installed"
-  log "published: $installed installed, $skipped deduped, digest $digest_rel"
+  catalog_git commit -q -m "loopwatch: $RUN_DATE — ${installed} page(s), digest"
+  log "committed: $installed installed, $skipped deduped, digest $digest_rel"
+  push_and_pr
 }

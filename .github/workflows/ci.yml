@@ -31,4 +31,4 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: shellcheck (error severity)
-        run: shellcheck -S error bin/*.sh lib/*.sh test/*.sh test/stubs/claude
+        run: shellcheck -S error bin/*.sh lib/*.sh test/*.sh test/stubs/*

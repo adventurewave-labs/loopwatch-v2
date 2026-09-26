@@ -29,14 +29,23 @@ setup() {
   unset STUB_TRIAGE_COST STUB_PAGES STUB_TRIAGE STUB_FAIL STUB_HELP_FLAGS STUB_MARKER STUB_DIGEST STUB_HIGHLIGHT 2>/dev/null || true
   LWLOG=""
 
-  REPO="$W/catalog"
-  mkdir -p "$REPO"
-  git -C "$REPO" init -q -b main 2>/dev/null || git -C "$REPO" init -q
-  git -C "$REPO" config user.email "test@test"
-  git -C "$REPO" config user.name  "loopwatch-test"
-  cp -R "$SRC_ROOT/site" "$REPO/site"
-  git -C "$REPO" add -A && git -C "$REPO" commit -qm "init"
-  SITE="$REPO/site"
+  # the catalog "GitHub repo": a bare remote seeded with site/ on main
+  BARE="$W/catalog-remote.git"
+  SEED="$W/seed"
+  git init -q --bare "$BARE"
+  git -C "$BARE" symbolic-ref HEAD refs/heads/main
+  mkdir -p "$SEED"
+  git -C "$SEED" init -q
+  git -C "$SEED" config user.email "test@test"
+  git -C "$SEED" config user.name  "loopwatch-test"
+  cp -R "$SRC_ROOT/site" "$SEED/site"
+  git -C "$SEED" add -A && git -C "$SEED" commit -qm "init"
+  git -C "$SEED" push -q "$BARE" HEAD:refs/heads/main
+  CATALOG="$H/.local/state/loopwatch/catalog"
+  SITE="$CATALOG/site"
+  export STUB_GH_REMOTE="$BARE" STUB_GH_STATE="$W/gh-state" STUB_GH_CALLS="$W/gh-calls.log"
+  mkdir -p "$STUB_GH_STATE"; : > "$STUB_GH_CALLS"
+  unset STUB_GH_COMMITS STUB_GH_PRS STUB_GH_FAIL 2>/dev/null || true
 
   # a Claude Code project dir holding the real-schema fixture
   TX="$H/.claude/projects/-Users-dev-src-turbo-flow/f1x7ure0.jsonl"
@@ -46,12 +55,11 @@ setup() {
   cat > "$H/.config/loopwatch/loopwatch.conf" <<EOF
 CLAUDE_CODE_GLOBS=("\$HOME/.claude/projects/*/*.jsonl")
 COWORK_GLOBS=()
-GIT_REPOS=()
 CLAUDE_BIN="$SRC_ROOT/test/stubs/claude"
-SITE_DIR="$SITE"
+GH_BIN="$SRC_ROOT/test/stubs/gh"
+CATALOG_REPO="stub/catalog"
+GITHUB_SCOPES=()
 ACTIVITY_MIN_BYTES=200
-PULL=false
-PUSH=false
 INCLUDE_PROJECTS=("*")
 SITE_VISIBILITY=protected
 EOF
@@ -61,7 +69,8 @@ EOF
 conf() { echo "$*" >> "$H/.config/loopwatch/loopwatch.conf"; }
 lw() { LWLOG="$W/last-run.log"; "$SRC_ROOT/bin/loopwatch-run.sh" "$@" 2> "$LWLOG"; }
 calls() { wc -l < "$CALLS" | tr -d ' '; }
-commits() { git -C "$REPO" rev-list --count HEAD; }
+commits() { git -C "$CATALOG" rev-list --count HEAD; }
+remote_main_commits() { git -C "$BARE" rev-list --count main; }
 ledger_last() { tail -n 1 "$LW_STATE/runs.jsonl"; }
 YEAR="$(date +%Y)"
 TODAY="$(date +%F)"
@@ -74,7 +83,13 @@ jq -e '.entries | length == 1' "$SITE/manifest.json" >/dev/null || fail "manifes
 jq -e '.digests | length == 1' "$SITE/manifest.json" >/dev/null || fail "digest record missing"
 test -f "$SITE/digests/$TODAY.html" || fail "digest page missing"
 [[ "$(commits)" == "2" ]] || fail "expected 2 commits (init + loopwatch)"
-ok "page, manifest, digest, commit"
+[[ "$(git -C "$CATALOG" rev-parse --abbrev-ref HEAD)" == "loopwatch/$TODAY" ]] || fail "run should commit on loopwatch/<date>"
+[[ "$(remote_main_commits)" == "1" ]] || fail "main on the remote must never be pushed to"
+git -C "$BARE" rev-parse -q --verify "refs/heads/loopwatch/$TODAY" >/dev/null || fail "run branch not pushed"
+[[ "$(grep -c '^pr create' "$STUB_GH_CALLS")" == "1" ]] || fail "expected exactly one pr create: $(cat "$STUB_GH_CALLS")"
+grep -q "^pr create head=loopwatch/$TODAY base=main" "$STUB_GH_CALLS" || fail "PR head/base wrong"
+grep -q "Settled the Turbo-Flow" "$STUB_GH_STATE/pr-1-body.md" || fail "PR body should carry the digest"
+ok "page, manifest, digest committed on loopwatch/<date>, pushed, exactly one PR, main untouched"
 B="$LW_STATE/run/bundle/transcripts"
 grep -q "CronJob plus work queue" "$B"/*.txt || fail "user text missing from bundle"
 grep -q "idempotent" "$B"/*.txt || fail "assistant text missing from bundle"
@@ -99,7 +114,7 @@ setup "state holds hashed keys, not paths (bug 7)"
 lw
 if grep -q "turbo-flow\|/Users/\|$H" "$LW_STATE/watermarks.json"; then fail "watermarks contain a path: $(cat "$LW_STATE/watermarks.json")"; fi
 jq -e '.files | keys | all(test("^[0-9a-f]{16}$"))' "$LW_STATE/watermarks.json" >/dev/null || fail "watermark keys not hashed"
-if git -C "$REPO" ls-files | grep -q watermarks; then fail "watermarks committed to the catalog repo"; fi
+if git -C "$CATALOG" ls-files | grep -q watermarks; then fail "watermarks committed to the catalog repo"; fi
 ok "watermark keys are 16-hex hashes; nothing committed"
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -326,6 +341,61 @@ lw
 if grep -q "stage=extract" "$CALLS"; then fail "stage B should not run with < \$0.05 left"; fi
 jq -e '.stage_b_skipped == "budget"' <(ledger_last) >/dev/null || fail "budget skip not in ledger: $(ledger_last)"
 ok "stage B skipped when the run budget is spent"
+
+# ═════════════════════════════════════════════════════════════════════════
+setup "GitHub source via API, zero local repos (R-8)"
+conf 'INCLUDE_PROJECTS=()'
+conf 'GITHUB_SCOPES=("user:marcuspat" "org:adventurewave-labs")'
+export STUB_GH_COMMITS="$FIXTURES/gh-search-commits.json" STUB_GH_PRS="$FIXTURES/gh-search-prs.json"
+lw --dry-run
+G="$LW_STATE/run/bundle/git"
+grep -q "commit marcuspat/turbo-rig a1b2c3d 2026-09-25  feat(gate): record cost_usd per gate verdict" "$G"/github-user-marcuspat.log || fail "commit line missing: $(cat "$G"/*)"
+grep -q "PR merged marcuspat/turbo-rig#42" "$G"/github-user-marcuspat.log || fail "merged PR missing"
+if grep -rq "ghp_abcdefghijklmnopqrstuvwxyz999999" "$G"; then fail "secret in commit message not scrubbed"; fi
+grep -q "api search/commits q=user:marcuspat author:marcuspat committer-date:>20" "$STUB_GH_CALLS" || fail "commit query wrong: $(cat "$STUB_GH_CALLS")"
+grep -q "api search/issues q=org:adventurewave-labs is:pr is:merged merged:>20" "$STUB_GH_CALLS" || fail "PR query wrong"
+grep -q "stage=triage" "$CALLS" || fail "GitHub-only activity should reach triage"
+ok "commits + merged PRs per scope, author resolved from gh, secrets scrubbed, no local clones"
+lw
+since1="$(jq -r '.github.since' "$LW_STATE/watermarks.json")"
+[[ "$since1" =~ ^20[0-9-]+T[0-9:]+Z$ ]] || fail "github watermark not a UTC timestamp: $since1"
+: > "$STUB_GH_CALLS"
+lw --dry-run
+grep -q "committer-date:>$since1" "$STUB_GH_CALLS" || fail "second run should query since the watermark"
+ok "timestamp watermark advances and is used as the next window"
+
+setup "GitHub search failure holds the GitHub watermark"
+conf 'GITHUB_SCOPES=("org:adventurewave-labs")'
+export STUB_GH_FAIL=search
+lw
+jq -e '.github.since == null' "$LW_STATE/watermarks.json" >/dev/null || fail "github watermark advanced despite a failed search"
+jq -e '.files | length == 1' "$LW_STATE/watermarks.json" >/dev/null || fail "transcript watermark should still advance"
+grep -q "GitHub commit search failed" "$LWLOG" || fail "failure not logged"
+ok "failed search: transcripts published, GitHub window retried next run"
+
+# ═════════════════════════════════════════════════════════════════════════
+setup "publishing: one rolling PR, never main (R-9)"
+lw
+printf '%s\n' "$(jq -nc '{type:"user",cwd:"/Users/dev/src/turbo-flow",message:{role:"user",content:"Second session: decided the spot pool needs a PodDisruptionBudget with minAvailable 1 so voluntary evictions never drain every ingest worker at once; recorded as the standing policy for batch pools."}}')" >> "$TX"
+export STUB_PAGES=two
+lw
+[[ "$(grep -c '^pr create' "$STUB_GH_CALLS")" == "1" ]] || fail "second run must not open a second PR"
+grep -q "^pr comment 1" "$STUB_GH_CALLS" || fail "second run should comment on the open PR"
+[[ "$(git -C "$BARE" rev-list --count "loopwatch/$TODAY")" == "3" ]] || fail "second run should add a commit to the PR branch"
+[[ "$(remote_main_commits)" == "1" ]] || fail "main was pushed to"
+git -C "$BARE" show "loopwatch/$TODAY:site/manifest.json" | jq -e '.entries | length == 2' >/dev/null || fail "PR branch manifest should hold both pages"
+ok "second run added to the open PR branch; one PR total; main untouched"
+
+setup "publishing: push failure fails closed"
+lw --dry-run
+[[ "$(grep -c '^pr create' "$STUB_GH_CALLS")" == "0" ]] || fail "dry-run must not open a PR"
+if git -C "$BARE" rev-parse -q --verify "refs/heads/loopwatch/$TODAY" >/dev/null; then fail "dry-run must not push"; fi
+ok "dry-run: no push, no PR"
+git -C "$CATALOG" remote set-url origin "$W/does-not-exist.git"
+if lw; then fail "run should fail when the push fails"; fi
+jq -e '.status == "failed"' <(ledger_last) >/dev/null || fail "failure not in ledger"
+jq -e '.files | length == 0' "$LW_STATE/watermarks.json" >/dev/null || fail "watermarks advanced without a pushed PR"
+ok "unreachable remote: run fails, watermarks held"
 
 echo
 echo "PASS — $N_CASES cases green"

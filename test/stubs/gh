@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# Stub gh CLI for the smoke test (stateful: open PRs live in $STUB_GH_STATE/prs.json).
+# Env knobs:
+#   STUB_GH_CALLS     file that gets one line per call
+#   STUB_GH_STATE     dir for prs.json
+#   STUB_GH_REMOTE    git URL/path that `gh repo clone` clones from
+#   STUB_GH_COMMITS   file with a search/commits JSON response (default: no items)
+#   STUB_GH_PRS       file with a search/issues JSON response  (default: no items)
+#   STUB_GH_FAIL      search | auth    — simulate failures
+set -u
+STATE="${STUB_GH_STATE:-/tmp}"
+PRS="$STATE/prs.json"
+[[ -f "$PRS" ]] || echo '[]' > "$PRS"
+rec() { echo "$*" >> "${STUB_GH_CALLS:-/dev/null}"; }
+
+arg_after() {  # arg_after <flag> <args...>
+  local f="$1"; shift
+  while [[ $# -gt 0 ]]; do
+    if [[ "$1" == "$f" ]]; then echo "${2:-}"; return; fi
+    shift
+  done
+}
+
+case "${1:-} ${2:-}" in
+  "auth status")
+    rec "auth status"
+    [[ "${STUB_GH_FAIL:-}" == "auth" ]] && exit 1
+    exit 0 ;;
+  "api user")
+    rec "api user"
+    echo '{"login":"marcuspat"}'; exit 0 ;;
+  "repo clone")
+    rec "repo clone $3 $4"
+    git clone -q "$STUB_GH_REMOTE" "$4"; exit $? ;;
+  "pr list")
+    rec "pr list $*"
+    jq -c '[.[] | select(.state == "open") | {number, headRefName}]' "$PRS"; exit 0 ;;
+  "pr create")
+    head="$(arg_after --head "$@")"; base="$(arg_after --base "$@")"; title="$(arg_after --title "$@")"
+    rec "pr create head=$head base=$base title=$title"
+    n=$(( $(jq 'length' "$PRS") + 1 ))
+    jq --argjson n "$n" --arg h "$head" --arg b "$base" --arg t "$title" \
+      '. + [{number: $n, headRefName: $h, baseRefName: $b, title: $t, state: "open"}]' "$PRS" > "$PRS.tmp" && mv "$PRS.tmp" "$PRS"
+    arg_after --body "$@" > "$STATE/pr-$n-body.md"
+    echo "https://github.com/stub/catalog/pull/$n"; exit 0 ;;
+  "pr comment")
+    rec "pr comment $3"; exit 0 ;;
+esac
+
+if [[ "${1:-}" == "api" ]]; then
+  ep="" q=""
+  for a in "$@"; do
+    case "$a" in search/*) ep="$a" ;; q=*) q="${a#q=}" ;; esac
+  done
+  rec "api $ep q=$q"
+  [[ "${STUB_GH_FAIL:-}" == "search" ]] && { echo "HTTP 502" >&2; exit 1; }
+  case "$ep" in
+    search/commits) if [[ -n "${STUB_GH_COMMITS:-}" ]]; then cat "$STUB_GH_COMMITS"; else echo '{"items":[]}'; fi ;;
+    search/issues)  if [[ -n "${STUB_GH_PRS:-}" ]]; then cat "$STUB_GH_PRS"; else echo '{"items":[]}'; fi ;;
+    *) echo '{}' ;;
+  esac
+  exit 0
+fi
+
+rec "unhandled $*"
+exit 1
