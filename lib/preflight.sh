@@ -19,11 +19,21 @@ vercel_protection_check() {
     pf_fail "could not read Vercel project $VERCEL_PROJECT_ID to confirm Deployment Protection (fail closed)"
     return
   fi
-  if jq -e '(.ssoProtection != null) or (.passwordProtection != null)' <<< "$body" >/dev/null 2>&1; then
-    pf_pass "Vercel project has Deployment Protection ($(jq -r '[(if .ssoProtection then "vercel-auth:" + (.ssoProtection.deploymentType // "?") else empty end), (if .passwordProtection then "password" else empty end)] | join(", ")' <<< "$body"))"
-  else
-    pf_fail "Vercel project $VERCEL_PROJECT_ID has NO Deployment Protection — catalog would be public"
-  fi
+  # Vercel returns {"enabled": false} objects for protection that is off, and
+  # "preview"-only protection leaves production public: both fail.
+  local verdict
+  verdict="$(jq -r '
+    def on(x): x != null and ((x | has("enabled") | not) or x.enabled == true);
+    def covers_prod(x): (x.deploymentType // "all") != "preview";
+    if (on(.ssoProtection) and covers_prod(.ssoProtection)) then "ok vercel-auth:" + (.ssoProtection.deploymentType // "all")
+    elif (on(.passwordProtection) and covers_prod(.passwordProtection)) then "ok password:" + (.passwordProtection.deploymentType // "all")
+    elif (on(.ssoProtection) or on(.passwordProtection)) then "preview-only"
+    else "none" end' <<< "$body" 2>/dev/null || echo none)"
+  case "$verdict" in
+    ok*)          pf_pass "Vercel project has Deployment Protection (${verdict#ok })" ;;
+    preview-only) pf_fail "Vercel project $VERCEL_PROJECT_ID protects previews only — production would be public" ;;
+    *)            pf_fail "Vercel project $VERCEL_PROJECT_ID has NO Deployment Protection — catalog would be public" ;;
+  esac
 }
 
 preflight() {

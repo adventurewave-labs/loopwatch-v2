@@ -585,5 +585,25 @@ lw --dry-run
 grep -rq "AFTER-BAD-LINE-MARKER" "$LW_STATE/run/bundle" || fail "content after a malformed line was lost"
 ok "malformed line skipped, following lines kept"
 
+# ═════════════════════════════════════════════════════════════════════════
+setup "review: live Vercel protection check (VERCEL_TOKEN set)"
+mkdir -p "$W/bin"
+cat > "$W/bin/curl" <<'EOF'
+#!/usr/bin/env bash
+cat "$STUB_VERCEL_JSON"
+EOF
+chmod +x "$W/bin/curl"
+conf 'VERCEL_PROJECT_ID=prj_test'
+pf() { PATH="$W/bin:$PATH" VERCEL_TOKEN=dummy "$LW_BASH" "$SRC_ROOT/bin/loopwatch-run.sh" --preflight > "$W/pf.txt" 2>&1; }
+echo '{"ssoProtection":{"enabled":true,"deploymentType":"all"},"passwordProtection":{"enabled":false,"deploymentType":null}}' > "$W/v.json"
+STUB_VERCEL_JSON="$W/v.json" pf || fail "protected project should pass: $(cat "$W/pf.txt")"
+grep -q "^PASS.*vercel-auth:all" "$W/pf.txt" || fail "should report vercel-auth:all"
+echo '{"ssoProtection":null,"passwordProtection":{"enabled":false,"deploymentType":null}}' > "$W/v.json"
+if STUB_VERCEL_JSON="$W/v.json" pf; then fail "a disabled protection object must not count as protected"; fi
+echo '{"ssoProtection":{"enabled":true,"deploymentType":"preview"}}' > "$W/v.json"
+if STUB_VERCEL_JSON="$W/v.json" pf; then fail "preview-only protection must fail"; fi
+grep -q "previews only" "$W/pf.txt" || fail "preview-only not explained"
+ok "vercel-auth:all passes; {enabled:false} and preview-only fail"
+
 echo
 echo "PASS — $N_CASES cases green"

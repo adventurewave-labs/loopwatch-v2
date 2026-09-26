@@ -73,5 +73,5 @@ REDACT_LIST="$HOME/.config/loopwatch/redact.list"
 SITE_VISIBILITY="protected"
 ALLOW_PUBLIC=false
 # Optional live check: set these and export VERCEL_TOKEN (never stored by loopwatch).
-VERCEL_PROJECT_ID=""
-VERCEL_TEAM_ID=""
+VERCEL_PROJECT_ID="prj_lTsOmjImav6NcOHOmI3QCKzET1GY"   # loopwatch-catalog (Vercel Authentication: all deployments)
+VERCEL_TEAM_ID="team_EuH46Fxu7FpOYopJ0HFygJYU"

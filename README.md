@@ -111,7 +111,7 @@ prompts/triage.md        Stage A: the value bar and candidate contract
 prompts/extract.md       Stage B: page contract
 site/                    catalog UI seed (index.html, app.js, manifest.json)
 catalog-template/        vercel.json (CSP), catalog-check CI, README for the catalog repo
-test/smoke-test.sh       36 sandboxed end-to-end cases, stubbed claude + gh
+test/smoke-test.sh       37 sandboxed end-to-end cases, stubbed claude + gh
 docs/                    PRD-v0.2, revival notes, manifest schema, v0.1 PRD
 ```
 
