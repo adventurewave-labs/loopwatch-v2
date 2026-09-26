@@ -81,7 +81,7 @@ The catalog is a separate private repo (`CATALOG_REPO`, default `marcuspat/loopw
 
 ## Correctness
 
-- Transcripts are watermarked by byte offset. The watermark stops at the **last newline**, so a session still being written never loses its tail. A file that shrank is re-read from 0. The first sighting of a file only mines it if it was touched in the last `FIRST_RUN_LOOKBACK_HOURS` (48).
+- Transcripts are watermarked by byte offset. The watermark stops at the **last newline**, so a session still being written never loses its tail. A file that shrank is re-read from 0, and so is one that was rotated or rewritten past its old offset: each offset carries a fingerprint of the file's first bytes (up to 1 KB), and a mismatch means the file was replaced. `test/prop/watermarks.sh` checks the invariant with random append, partial-line, truncate, rotate and failed-run sequences: every line complete at a committed run is delivered exactly once. The first sighting of a file only mines it if it was touched in the last `FIRST_RUN_LOOKBACK_HOURS` (48).
 - **No self-ingestion.** Headless calls use `--no-session-persistence` and always run from `~/.local/state/loopwatch/run`. That project dir, and v0.1's `loopwatch-XXXXXX` temp dirs, are excluded, and lines whose `cwd` is the run dir are dropped. See `docs/revival-notes.md` for the experiment that confirmed the bug.
 - A mkdir lock serializes runs. It records its PID, and a lock whose process is gone (or older than `LOCK_STALE_HOURS`) is reclaimed, so a crash can't silently stop later runs. A run that finds a live lock writes a `skipped_reason: locked` ledger row.
 - A result the CLI flags as an error (`is_error: true`) fails the run, even when `claude` exits 0.

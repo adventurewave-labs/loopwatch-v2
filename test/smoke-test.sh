@@ -200,6 +200,26 @@ grep -q "shrank" "$LWLOG" || fail "truncation not logged"
 ok "size < watermark resets to 0 and collects the new content"
 
 # ═════════════════════════════════════════════════════════════════════════
+setup "source replaced by a LARGER file is re-read from 0 (head fingerprint, backlog #24)"
+lw
+jq -e '.heads | length > 0' "$LW_STATE/watermarks.json" >/dev/null || fail "no head fingerprint stored"
+old_size="$(wc -c < "$TX" | tr -d ' ')"
+mv "$TX" "$TX.1"
+jq -nc '{type:"user",cwd:"/Users/dev/src/turbo-flow",message:{role:"user",content:"REPLACED-HEAD-MARKER first line of a new session file written after rotation, long enough to count as real activity for loopwatch."}}' > "$TX"
+while [[ "$(wc -c < "$TX" | tr -d ' ')" -le "$old_size" ]]; do
+  jq -nc '{type:"assistant",cwd:"/Users/dev/src/turbo-flow",message:{role:"assistant",content:[{type:"text",text:"filler line to grow the replacement past the old watermark offset"}]}}' >> "$TX"
+done
+lw --dry-run
+grep -rq "REPLACED-HEAD-MARKER" "$LW_STATE/run/bundle" || fail "first line of a larger replacement file was skipped"
+grep -q "source replaced" "$LWLOG" || fail "replacement not logged"
+# state from before fingerprints (no .heads) is still honoured: no re-read, no crash
+lw
+jq 'del(.heads)' "$LW_STATE/watermarks.json" > "$W/wm" && mv "$W/wm" "$LW_STATE/watermarks.json"
+lw --dry-run
+if grep -rq "REPLACED-HEAD-MARKER" "$LW_STATE/run/bundle" 2>/dev/null; then fail "legacy watermark without a fingerprint re-read the file"; fi
+ok "rotation past the old offset re-reads from 0; legacy state without .heads still trusted"
+
+# ═════════════════════════════════════════════════════════════════════════
 setup "first-run lookback skips old history"
 touch -t 202001010000 "$TX"
 lw
