@@ -125,7 +125,9 @@ lw
 [[ "$(calls)" == "$n1" ]] || fail "second run with no new activity invoked claude"
 jq -e '.status == "skipped" and .skipped_reason == "below_activity_min" and .cost_usd == 0' <(ledger_last) >/dev/null \
   || fail "skip not recorded in ledger: $(ledger_last)"
-ok "no-activity run made 0 claude calls and logged skipped_reason"
+[[ "$(wc -l < "$LW_STATE/runs.jsonl" | tr -d ' ')" == "2" ]] || fail "expected exactly 2 ledger rows: $(cat "$LW_STATE/runs.jsonl")"
+if grep -q '"status":"failed"' "$LW_STATE/runs.jsonl"; then fail "spurious failed row in the ledger"; fi
+ok "no-activity run made 0 claude calls and logged skipped_reason (one row per run, no spurious rows)"
 
 # ═════════════════════════════════════════════════════════════════════════
 setup "self-ingestion excluded (R-4, bug 1)"
@@ -396,6 +398,73 @@ if lw; then fail "run should fail when the push fails"; fi
 jq -e '.status == "failed"' <(ledger_last) >/dev/null || fail "failure not in ledger"
 jq -e '.files | length == 0' "$LW_STATE/watermarks.json" >/dev/null || fail "watermarks advanced without a pushed PR"
 ok "unreachable remote: run fails, watermarks held"
+
+# ═════════════════════════════════════════════════════════════════════════
+setup "CLI: setup, run, ledger, schedule print (R-13)"
+rm -f "$H/.config/loopwatch/loopwatch.conf" "$H/.config/loopwatch/redact.list"
+"$SRC_ROOT/bin/loopwatch" setup > "$W/setup.txt"
+test -f "$H/.config/loopwatch/loopwatch.conf" || fail "setup should create the conf"
+[[ "$(stat -c %a "$H/.config/loopwatch/redact.list" 2>/dev/null || stat -f %Lp "$H/.config/loopwatch/redact.list")" == "600" ]] || fail "redact.list should be 0600"
+test -L "$H/.local/bin/loopwatch" || fail "setup should link ~/.local/bin/loopwatch"
+grep -q '^INCLUDE_PROJECTS=($' "$H/.config/loopwatch/loopwatch.conf" || fail "fresh conf must ship an empty allowlist"
+"$SRC_ROOT/bin/loopwatch" setup > "$W/setup2.txt"; grep -q "keep:" "$W/setup2.txt" || fail "second setup must not overwrite"
+ok "setup creates conf (empty allowlist), 0600 redact.list, PATH link; idempotent"
+# back to the sandbox config for a real run through the CLI entry point
+cat >> "$H/.config/loopwatch/loopwatch.conf" <<EOF
+CLAUDE_BIN="$SRC_ROOT/test/stubs/claude"
+GH_BIN="$SRC_ROOT/test/stubs/gh"
+CATALOG_REPO="stub/catalog"
+GITHUB_SCOPES=()
+COWORK_GLOBS=()
+CLAUDE_CODE_GLOBS=("\$HOME/.claude/projects/*/*.jsonl")
+INCLUDE_PROJECTS=("*")
+ACTIVITY_MIN_BYTES=200
+EOF
+LWLOG="$W/cli.log"
+"$H/.local/bin/loopwatch" run 2> "$LWLOG" || fail "loopwatch run via the PATH link failed"
+test -f "$SITE/pages/$YEAR/k8s-cronjob-queue-ingest.html" || fail "loopwatch run did not publish"
+jq -e '.target == "manual"' <(ledger_last) >/dev/null || fail "on-demand run should be target=manual"
+LOOPWATCH_TARGET=nightly "$SRC_ROOT/bin/loopwatch" run 2>> "$LWLOG"
+jq -e '.target == "nightly" and .status == "skipped"' <(ledger_last) >/dev/null || fail "target override not recorded"
+"$SRC_ROOT/bin/loopwatch" ledger > "$W/ledger.txt"
+grep -q "all-time: 2 runs, 1 with model calls, 1 pages" "$W/ledger.txt" || fail "ledger summary wrong: $(cat "$W/ledger.txt")"
+"$SRC_ROOT/bin/loopwatch" schedule print 6 5 > "$W/plist.xml"
+grep -q "<string>nightly</string>" "$W/plist.xml" || fail "scheduled runs must be target=nightly"
+grep -q "<integer>6</integer>" "$W/plist.xml" || fail "hour not rendered"
+if grep -q "__" "$W/plist.xml"; then fail "unrendered placeholder in plist"; fi
+[[ "$("$SRC_ROOT/bin/loopwatch" version)" == "loopwatch "* ]] || fail "version"
+ok "loopwatch run (manual) + nightly target in ledger; ledger summary; plist renders; nothing scheduled by default"
+if [[ -e "$H/Library/LaunchAgents" ]]; then fail "setup/run must not install a schedule"; fi
+
+# ═════════════════════════════════════════════════════════════════════════
+setup "exports: --export-md (R-15) and EXPORT_DIGEST_TO (R-16)"
+conf "EXPORT_DIGEST_TO=\"$W/rig-inbox\""
+lw --export-md "$W/md"
+MD="$W/md/k8s-cronjob-queue-ingest.md"
+test -f "$MD" || fail "markdown export missing"
+head -1 "$MD" | grep -q '^---$' || fail "front-matter missing"
+grep -q '^slug: k8s-cronjob-queue-ingest$' "$MD" || fail "slug front-matter"
+grep -q '^category: infra/kubernetes$' "$MD" || fail "category front-matter"
+grep -q '^# Turbo-Flow ingest: CronJob + work queue' "$MD" || fail "title heading"
+if grep -q '<[a-z]' "$MD"; then fail "HTML left in markdown export"; fi
+D="$W/rig-inbox/loopwatch-$TODAY.md"
+test -f "$D" || fail "digest export missing"
+grep -q "Settled the Turbo-Flow" "$D" || fail "digest export lacks the summary"
+grep -q "pull/1" "$D" || fail "digest export should link the PR"
+ok "page -> Markdown with front-matter; digest dropped in the Turbo Rig inbox with PR link"
+
+# ═════════════════════════════════════════════════════════════════════════
+setup "Cowork source label + cowork:* allowlist (R-14 path, schema pending)"
+CW="$H/Library/Application Support/Claude/local-agent-mode-sessions/acct1/sess1"
+mkdir -p "$CW"
+cp "$FIXTURES/claude-code-2.1.jsonl" "$CW/s1.jsonl"
+conf 'COWORK_GLOBS=("$HOME/Library/Application Support/Claude/local-agent-mode-sessions/*/*/*.jsonl")'
+conf 'INCLUDE_PROJECTS=("cowork:*")'
+lw --dry-run
+ls "$LW_STATE/run/bundle/transcripts" | grep -q "^cowork-" || fail "cowork transcript not collected"
+if ls "$LW_STATE/run/bundle/transcripts" | grep -q "^claude-code-"; then fail "cowork:* must not include claude-code sources"; fi
+grep -q "=== source: cowork:" "$LW_STATE/run/bundle/transcripts"/cowork-*.txt || fail "cowork label missing"
+ok "glob with spaces in the path, cowork label, label-scoped allowlist"
 
 echo
 echo "PASS — $N_CASES cases green"

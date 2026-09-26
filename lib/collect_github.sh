@@ -55,7 +55,7 @@ collect_github() {
           + " " + ((.closed_at // "")[0:10]) + "  " + ((.title // "") | .[0:200])
           + (if (.body // "") != "" then "\n    " + ((.body // "") | gsub("\\s+"; " ") | .[0:600]) else "" end)' 2>/dev/null
     } | head -c "$((MAX_FILE_KB * 1024))" | scrub_all > "$out"
-    if [[ "$(grep -v '^=== ' "$out" | wc -c | tr -d ' ')" -lt 20 ]]; then
+    if [[ "$( { grep -v '^=== ' "$out" || true; } | wc -c | tr -d ' ')" -lt 20 ]]; then
       rm -f "$out"
     else
       printf '%s\t%s\n' "$(now_epoch)" "bundle/git/github-${safe}.log" >> "$RUN_DIR/bundle-index.tsv"

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # loopwatch — activity deltas -> headless claude extraction -> static catalog
-# usage: loopwatch-run.sh [--dry-run] [--list-sources] [--preflight] [--target nightly|manual]
-set -Eeuo pipefail
+# usage: loopwatch-run.sh [--dry-run] [--list-sources] [--preflight] [--target nightly|manual] [--export-md DIR]
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -39,6 +39,8 @@ source "$CONF"
 : "${CATALOG_BASE:=main}"
 : "${CATALOG_DIR:=$STATE_DIR/catalog}"
 : "${GITHUB_AUTHOR:=}"
+: "${EXPORT_MD_DIR:=}"
+: "${EXPORT_DIGEST_TO:=}"
 if [[ -z "${GITHUB_SCOPES+x}" ]]; then
   GITHUB_SCOPES=("user:marcuspat" "org:adventurewave-labs" "org:creandotumatrix-labs")
 fi
@@ -57,6 +59,7 @@ while [[ $# -gt 0 ]]; do
     --list-sources) LIST_ONLY=true ;;
     --preflight)    PREFLIGHT_ONLY=true ;;
     --target)       shift; RUN_TARGET="${1:-manual}" ;;
+    --export-md)    shift; EXPORT_MD_DIR="${1:?--export-md needs a directory}" ;;
     -h|--help)      sed -n '2,3s/^# //p' "$0"; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
@@ -106,6 +109,8 @@ source "$ROOT_DIR/lib/extract.sh"
 source "$ROOT_DIR/lib/collect_github.sh"
 # shellcheck disable=SC1091
 source "$ROOT_DIR/lib/catalog.sh"
+# shellcheck disable=SC1091
+source "$ROOT_DIR/lib/export.sh"
 
 if [[ "$PREFLIGHT_ONLY" == "true" ]]; then
   preflight
@@ -124,7 +129,20 @@ if ! mkdir "$LOCK" 2>/dev/null; then
   log "lock held ($LOCK) — another run active; exiting"
   exit 0
 fi
-trap 'rmdir "$LOCK" 2>/dev/null || true' EXIT
+LEDGER_DONE=false
+# One exit path: any non-zero exit (die, or set -e on an unexpected failure) leaves an
+# autopsy and a ledger row. Subshells do not inherit this trap, so a failing command
+# substitution can never write a spurious "failed" row.
+on_exit() {
+  local rc="$1"
+  if [[ "$rc" -ne 0 && "$LEDGER_DONE" != "true" ]]; then
+    log "run failed (exit $rc${DIE_REASON:+, $DIE_REASON})"
+    autopsy
+    finish failed "${DIE_REASON:-error}" 0
+  fi
+  rmdir "$LOCK" 2>/dev/null || true
+}
+trap 'on_exit $?' EXIT
 
 rm -rf "$RUN_DIR"
 mkdir -p "$RUN_DIR/bundle/transcripts" "$RUN_DIR/bundle/git" "$RUN_DIR/pages"
@@ -134,7 +152,6 @@ TRIMMED_BYTES=0
 POSTSCAN_DROPS=0
 VALIDATOR_DROPS=0
 STAGE_B_SKIP=""
-LEDGER_DONE=false
 
 autopsy() {
   restore_bundle 2>/dev/null || true
@@ -151,8 +168,7 @@ finish() {  # finish <status> <skipped_reason> <pages>
     ledger_append "$1" "$2" "${3:-0}" || log "WARN: ledger append failed"
   fi
 }
-die() { log "FATAL: $*"; autopsy; finish failed "${DIE_REASON:-error}" 0; exit 1; }
-trap 'log "unexpected error (line $LINENO)"; autopsy; finish failed error 0' ERR
+die() { log "FATAL: $*"; exit 1; }
 
 # privacy preflight (R-5): a publishing run never starts if it fails
 if ! preflight > "$RUN_DIR/preflight.txt" 2>&1; then
@@ -201,4 +217,7 @@ fi
 
 publish_run "$META"
 cp "$RUN_DIR/new-watermarks.json" "$WATERMARKS"
+# optional seams (never fail the run: the PR is already out)
+if [[ -n "$EXPORT_MD_DIR" ]]; then export_md "$EXPORT_MD_DIR" || log "WARN: --export-md failed"; fi
+if [[ -n "$EXPORT_DIGEST_TO" ]]; then export_digest "$EXPORT_DIGEST_TO" || log "WARN: digest export failed"; fi
 finish published "" "${INSTALLED_PAGES:-0}"

@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+# loopwatch — command-line entry point (R-13). On-demand first; the schedule is opt-in.
+#
+#   loopwatch run [--export-md DIR]   collect -> triage -> write -> PR     (target: manual)
+#   loopwatch dry-run                 same, but nothing is published; staging kept
+#   loopwatch sources                 what would be collected, and why each source is in/out
+#   loopwatch preflight               privacy/visibility checks (non-zero exit on FAIL)
+#   loopwatch ledger [N]              last N runs from the ledger + totals (default 10)
+#   loopwatch discover [--show-names] read-only Phase 0 report for this machine
+#   loopwatch setup                   create ~/.config/loopwatch/{loopwatch.conf,redact.list}, link ~/.local/bin/loopwatch
+#   loopwatch schedule install [HH MM] | remove | print
+#                                     opt-in nightly launchd job (macOS), default 21:30
+#   loopwatch update                  git pull the tool clone
+#   loopwatch version
+set -euo pipefail
+
+SELF="$0"
+while [[ -L "$SELF" ]]; do
+  target="$(readlink "$SELF")"
+  case "$target" in /*) SELF="$target" ;; *) SELF="$(dirname "$SELF")/$target" ;; esac
+done
+ROOT_DIR="$(cd "$(dirname "$SELF")/.." && pwd)"
+CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}/loopwatch"
+STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}/loopwatch"
+LABEL="com.adventurewave.loopwatch"
+PLIST_DEST="$HOME/Library/LaunchAgents/$LABEL.plist"
+
+usage() { sed -n '3,15s/^# \{0,1\}//p' "$SELF"; }
+
+cmd_setup() {
+  mkdir -p "$CONFIG_HOME" "$STATE_HOME" "$HOME/.local/bin"
+  if [[ -f "$CONFIG_HOME/loopwatch.conf" ]]; then
+    echo "keep:    $CONFIG_HOME/loopwatch.conf (exists)"
+  else
+    sed "s|^CLAUDE_BIN=\"claude\"|CLAUDE_BIN=\"$(command -v claude || echo claude)\"|" \
+      "$ROOT_DIR/loopwatch.conf.example" > "$CONFIG_HOME/loopwatch.conf"
+    echo "created: $CONFIG_HOME/loopwatch.conf  <- set INCLUDE_PROJECTS (empty = collect nothing)"
+  fi
+  if [[ -f "$CONFIG_HOME/redact.list" ]]; then
+    echo "keep:    $CONFIG_HOME/redact.list (exists)"
+  else
+    cat > "$CONFIG_HOME/redact.list" <<'EOF'
+# loopwatch redact.list — one regex per line, case-insensitive; optional "=>replacement".
+# Applied before the model sees anything; generated pages hitting any line are dropped.
+# Keep this file local: it is never committed anywhere.
+# Examples:
+#   Globex( Corporation)?
+#   Initech=>client-b
+EOF
+    echo "created: $CONFIG_HOME/redact.list  <- add client/entity names"
+  fi
+  chmod 600 "$CONFIG_HOME/redact.list"
+  ln -sf "$ROOT_DIR/bin/loopwatch" "$HOME/.local/bin/loopwatch"
+  echo "linked:  $HOME/.local/bin/loopwatch -> $ROOT_DIR/bin/loopwatch"
+  echo
+  echo "next: loopwatch sources   (then)   loopwatch preflight   (then)   loopwatch dry-run"
+}
+
+render_plist() {  # render_plist HH MM
+  sed -e "s|__LOOPWATCH_DIR__|$ROOT_DIR|g" \
+      -e "s|__STATE_DIR__|$STATE_HOME|g" \
+      -e "s|__HOME_DIR__|$HOME|g" \
+      -e "s|__HOUR__|$((10#$1))|g" \
+      -e "s|__MINUTE__|$((10#$2))|g" \
+      -e "s|__LABEL__|$LABEL|g" \
+      "$ROOT_DIR/launchd/com.adventurewave.loopwatch.plist"
+}
+
+cmd_schedule() {
+  local sub="${1:-print}" hh="${2:-21}" mm="${3:-30}"
+  case "$sub" in
+    print)
+      render_plist "$hh" "$mm" ;;
+    install)
+      command -v launchctl >/dev/null 2>&1 || { echo "launchctl not found — schedule install is macOS-only; use cron: $mm $hh * * * \"$ROOT_DIR/bin/loopwatch-run.sh\" --target nightly" >&2; exit 1; }
+      mkdir -p "$(dirname "$PLIST_DEST")" "$STATE_HOME/logs"
+      render_plist "$hh" "$mm" > "$PLIST_DEST"
+      launchctl bootout "gui/$(id -u)" "$PLIST_DEST" 2>/dev/null || true
+      launchctl bootstrap "gui/$(id -u)" "$PLIST_DEST"
+      echo "installed: $PLIST_DEST (daily at $hh:$(printf '%02d' "$((10#$mm))"), target=nightly)"
+      echo "every run is capped by BUDGET_USD and skips with zero model calls on quiet days"
+      echo "remove with: loopwatch schedule remove" ;;
+    remove)
+      if [[ -f "$PLIST_DEST" ]]; then
+        launchctl bootout "gui/$(id -u)" "$PLIST_DEST" 2>/dev/null || true
+        rm -f "$PLIST_DEST"
+        echo "removed: $PLIST_DEST"
+      else
+        echo "no schedule installed"
+      fi ;;
+    *) echo "usage: loopwatch schedule install [HH MM] | remove | print" >&2; exit 2 ;;
+  esac
+}
+
+cmd_ledger() {
+  local n="${1:-10}" ledger="${LEDGER:-$STATE_HOME/runs.jsonl}"
+  [[ -f "$ledger" ]] || { echo "no runs yet ($ledger)"; exit 0; }
+  printf '%-25s %-8s %-10s %-13s %6s %9s  %s\n' TS TARGET STATUS MODEL PAGES COST_USD REASON
+  tail -n "$n" "$ledger" | jq -r '[.ts, .target, .status, (.model // "-"), (.pages | tostring),
+      (.cost_usd | tostring), (.skipped_reason // .stage_b_skipped // "")] | @tsv' \
+    | while IFS=$'\t' read -r ts t st m p c r; do
+        printf '%-25s %-8s %-10s %-13s %6s %9s  %s\n' "$ts" "$t" "$st" "$m" "$p" "$c" "$r"
+      done
+  jq -s '{runs: length, model_calls_runs: (map(select(.model != null)) | length),
+          pages: (map(.pages) | add), cost_usd: (map(.cost_usd) | add * 10000 | round / 10000),
+          median_cost_usd: (map(select(.model != null) | .cost_usd) | sort | if length == 0 then 0 else .[length / 2 | floor] end)}' "$ledger" \
+    | jq -r '"all-time: \(.runs) runs, \(.model_calls_runs) with model calls, \(.pages) pages, $\(.cost_usd) total, median $\(.median_cost_usd)/run with calls"'
+}
+
+sub="${1:-help}"; shift || true
+case "$sub" in
+  run)       exec "$ROOT_DIR/bin/loopwatch-run.sh" --target "${LOOPWATCH_TARGET:-manual}" "$@" ;;
+  dry-run)   exec "$ROOT_DIR/bin/loopwatch-run.sh" --dry-run "$@" ;;
+  sources)   exec "$ROOT_DIR/bin/loopwatch-run.sh" --list-sources ;;
+  preflight) exec "$ROOT_DIR/bin/loopwatch-run.sh" --preflight ;;
+  discover)  exec "$ROOT_DIR/bin/loopwatch-discover.sh" "$@" ;;
+  ledger)    cmd_ledger "$@" ;;
+  setup)     cmd_setup ;;
+  schedule)  cmd_schedule "$@" ;;
+  update)    git -C "$ROOT_DIR" pull --ff-only ;;
+  version)   echo "loopwatch $(cat "$ROOT_DIR/VERSION")" ;;
+  help|-h|--help) usage ;;
+  *) echo "unknown command: $sub" >&2; usage >&2; exit 2 ;;
+esac

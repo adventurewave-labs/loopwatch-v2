@@ -147,7 +147,7 @@ collect_globs() {
       } | scrub_all > "$out"
       rm -f "$chunk"
       # drop if filtering left nothing beyond the header
-      if [[ "$(grep -v '^=== ' "$out" | wc -c | tr -d ' ')" -lt 20 ]]; then
+      if [[ "$( { grep -v '^=== ' "$out" || true; } | wc -c | tr -d ' ')" -lt 20 ]]; then
         rm -f "$out"
       else
         printf '%s\t%s\n' "$(file_mtime "$f")" "bundle/transcripts/${label}-${n}.txt" >> "$RUN_DIR/bundle-index.tsv"
@@ -195,7 +195,7 @@ bundle_bytes() {
 # bytes of real content (headers excluded) — the activity bar compares against this
 activity_bytes() {
   find "$RUN_DIR/bundle/transcripts" "$RUN_DIR/bundle/git" -type f -exec cat {} + 2>/dev/null \
-    | grep -v '^=== ' | wc -c | tr -d ' '
+    | { grep -v '^=== ' || true; } | wc -c | tr -d ' '
 }
 
 write_context() {
