@@ -163,8 +163,13 @@ cmd_doctor() {
     local leaks
     leaks="$(jq -R 'fromjson? | objects' "$ledger" | jq -s '[.[-14:][] | select(.skipped_reason == "canary_leak" or .skipped_reason == "input_leak")] | length')"
     if [[ "$leaks" -gt 0 ]]; then say FAIL canary "$leaks privacy self-test failure(s) in the last 14 runs (canary_leak/input_leak)"
-    elif [[ "$(jq -r '.canary // ""' <<< "$last")" == ok ]]; then say OK canary "last run's privacy self-test passed"
-    else say WARN canary "last run recorded no canary result"; fi
+    else
+      # quiet days (no activity, locked, budget-skipped) record no canary: judge the latest run that did
+      local lastc
+      lastc="$(jq -R 'fromjson? | objects' "$ledger" | jq -rs '[.[] | select((.canary // "") != "")] | last | .canary // ""')"
+      if [[ "$lastc" == ok ]]; then say OK canary "latest privacy self-test passed"
+      else say WARN canary "no run has recorded a privacy self-test yet"; fi
+    fi
     local spent pct
     spent="$(jq -Rn --arg m "$(date +%Y-%m)" '[inputs | fromjson? | objects | select((.ts // "") | startswith($m)) | (.cost_usd // 0) | numbers] | add // 0' "$ledger")"
     if [[ "$cap" =~ ^[0-9]+(\.[0-9]+)?$ ]] && jq -e -n --argjson c "$cap" '$c > 0' >/dev/null; then

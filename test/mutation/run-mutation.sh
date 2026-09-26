@@ -12,6 +12,7 @@
 #   MUT_JOBS=2        mutants run in parallel
 #   MUT_MIN_SCORE=0   exit 1 when the kill share (percent) is below this
 #   MUT_KEEP=1        keep the mutated copies for inspection
+#   MUT_SKIP_BASELINE=1  skip the check that every suite passes on the unmutated tree
 # Needs python3 (applies the edits) and everything the listed suites need.
 set -euo pipefail
 
@@ -52,6 +53,7 @@ def unesc(t):
 p, a, b = sys.argv[1], unesc(sys.argv[2]), unesc(sys.argv[3])
 s = open(p).read()
 if s.count(a) != 1: sys.exit(f'anchor found {s.count(a)} times')
+if a == b: sys.exit('replacement is identical to the anchor (not a mutant)')
 open(p, 'w').write(s.replace(a, b))
 PY
   then printf '%s\tBROKEN\tanchor did not match\t0\n' "$id"; return 0; fi
@@ -75,6 +77,21 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/loopwatch-mut.XXXXXX")"
 export WORK LIST ROOT_DIR MUT_KEEP
 if [[ $# -gt 0 ]]; then ids=("$@"); else
   ids=(); while IFS= read -r l; do ids+=("$l"); done < <(grep -v '^#' "$LIST" | cut -f1)
+fi
+# Baseline: every suite the selected mutants use must pass on the UNmutated tree first,
+# or any failure (a stale golden, a broken environment) would be scored as a kill.
+if [[ -z "${MUT_SKIP_BASELINE:-}" ]]; then
+  suites="$(for id in "${ids[@]}"; do awk -F'\t' -v id="$id" '$1 == id {print $3}' "$LIST"; done | tr ',' '\n' | LC_ALL=C sort -u | tr '\n' ' ')"
+  mkdir -p "$WORK/.baseline"
+  (cd "$ROOT_DIR" && git ls-files -z | xargs -0 tar cf -) | (cd "$WORK/.baseline" && tar xf -)
+  for s in $suites; do
+    if ! (cd "$WORK/.baseline" && eval "$(suite_cmd "$s")") > "$WORK/baseline-$s.log" 2>&1; then
+      echo "FAIL — baseline: suite '$s' fails on the unmutated tree, so kills would mean nothing:" >&2
+      tail -5 "$WORK/baseline-$s.log" >&2; exit 1
+    fi
+  done
+  echo "baseline: suites [${suites% }] pass on the unmutated tree"
+  rm -rf "$WORK/.baseline"
 fi
 echo "mutation testing: ${#ids[@]} mutant(s), $JOBS in parallel (log: $WORK/results.tsv)"
 printf '%s\n' "${ids[@]}" | xargs -P "$JOBS" -I{} bash "$SCRIPT_DIR/run-mutation.sh" --one {} | tee "$WORK/results.tsv"

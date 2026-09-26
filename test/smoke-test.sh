@@ -793,6 +793,9 @@ grep -q '^WARN  redact.list    mode 644' "$W/doctor.txt" || fail "redact.list mo
 grep -q '^WARN  spend          \$17\.[0-9]* of \$20.00 this month (8[0-9]%)' "$W/doctor.txt" || fail "spend line: $(grep spend "$W/doctor.txt")"
 grep -q '^WARN  cost           1 cost anomaly' "$W/doctor.txt" || fail "anomaly line: $(grep cost "$W/doctor.txt")"
 grep -q '^WARN  prompts        changed since the last run (000000000000 ->' "$W/doctor.txt" || fail "drift line: $(grep prompts "$W/doctor.txt")"
+jq -c '.status = "skipped" | .skipped_reason = "no_activity" | .cost_usd = 0 | .cost_anomaly = false | del(.canary)' <(tail -n 1 "$L") >> "$L"
+doc || true
+grep -q '^OK    canary ' "$W/doctor.txt" || fail "a quiet-day row without a canary must not turn the canary line to WARN: $(grep canary "$W/doctor.txt")"
 jq -c '.status = "failed" | .skipped_reason = "canary_leak" | .cost_usd = 0' <(tail -n 1 "$L") >> "$L"
 if doc; then fail "a canary leak must fail doctor"; fi
 grep -q '^FAIL  last-run       failed 0h ago: canary_leak' "$W/doctor.txt" || fail "failed-run line: $(grep last-run "$W/doctor.txt")"
@@ -809,6 +812,11 @@ race() {  # race <n>: start n runs at once; wait for all
   done
   wait
 }
+# hold_peak <file>: most runs inside the lock at once, from "<ns> +1|-1 <pid>" lines; at equal
+# timestamps a release sorts before an acquire (1-second clocks must not fake an overlap)
+hold_peak() { sort -k1,1n -k2,2n "$1" | awk '{ c += $2; if (c > m) m = c } END { print m + 0 }'; }
+printf '%s\n' "1790000000000000000 +1 100" "1790000002000000000 -1 100" "1790000002000000000 +1 200" "1790000004000000000 -1 200" > "$W/ties"
+[[ "$(hold_peak "$W/ties")" == 1 ]] || fail "hold_peak counts back-to-back runs in the same second as overlapping"
 check_race() {  # check_race <label>: never two runs inside the lock; every run either worked or skipped as locked
   local rows ran locked peak
   rows="$(tail -n 6 "$LW_STATE/runs.jsonl")"
@@ -817,7 +825,7 @@ check_race() {  # check_race <label>: never two runs inside the lock; every run 
   locked="$(jq -s '[.[] | select(.skipped_reason == "locked")] | length' <<< "$rows")"
   # the invariant: at most one run holds the lock at any instant (a late starter may run
   # legitimately after the first finished, so "exactly one ran" would be timing-dependent)
-  peak="$(sort -n "$W/holds" | awk '{ c += $2; if (c > m) m = c } END { print m + 0 }')"
+  peak="$(hold_peak "$W/holds")"
   [[ "$peak" == 1 ]] || fail "$1: peak $peak runs inside the lock (want exactly 1): $(jq -c '{status, skipped_reason}' <<< "$rows" | tr '\n' ' ')"
   [[ "$ran" -ge 1 && $(( ran + locked )) == 6 ]] || fail "$1: want 6 = runs + locked skips, got $ran + $locked: $(jq -c '{status, skipped_reason}' <<< "$rows" | tr '\n' ' ')"
   RACE_RAN="$RACE_RAN$ran "
@@ -838,6 +846,22 @@ wait
 [[ "$(cat "$LW_STATE/.lock/pid" 2>/dev/null)" == "$$" ]] || fail "a finishing run removed a lock it did not own"
 ok "6 concurrent runs, fresh and over a dead-PID lock (reclaimed once): never 2 inside the lock (runs that worked: ${RACE_RAN% }, rest skipped as locked); ledger and watermarks valid; a run only releases its own lock"
 rm -rf "$LW_STATE/.lock"
+
+# ═════════════════════════════════════════════════════════════════════════
+setup "review fixes: logs are scrubbed before export; highlight splitter keeps version numbers"
+conf "OTEL_EXPORT_DIR=\"$W/otel\""
+STUB_PAGES=secretcode STUB_HIGHLIGHT="$(printf '2.1.283 CLI flag --no-session-persistence landed\n1. numbered item\n1.5x faster triage')" lw || true
+grep -q "grounding:" "$LWLOG" || fail "the grounding log line (the leak path) did not fire"
+if grep -rq "sk-ant-api03" "$LWLOG" "$LW_STATE/logs" "$W/otel" 2>/dev/null; then
+  fail "a secret from model output reached the logs/OTLP export: $(grep -rl 'sk-ant-api03' "$LWLOG" "$LW_STATE/logs" "$W/otel" | head -3)"
+fi
+grep -rq "REDACTED:anthropic" "$LW_STATE/logs" || fail "the scrubbed token should show as a redaction marker"
+D="$(ls "$SITE"/digests/*.html 2>/dev/null | head -1)"
+[[ -n "$D" ]] || D="$(ls "$LW_STATE"/run/*.html "$LW_STATE"/run/digest* 2>/dev/null | head -1)"
+jq -e '.highlights | index("2.1.283 CLI flag --no-session-persistence landed") and index("numbered item") and index("1.5x faster triage")' "$LW_STATE/run/triage-meta.json" >/dev/null 2>&1 \
+  || jq -e '.highlights | index("2.1.283 CLI flag --no-session-persistence landed") and index("numbered item") and index("1.5x faster triage")' "$(ls "$LW_STATE"/run/meta*.json | head -1)" >/dev/null \
+  || fail "highlights mangled: $(jq -c '.highlights' "$LW_STATE"/run/*meta*.json 2>/dev/null | head -2)"
+ok "a secret in unpublished model code never reaches the text log, JSON log or OTLP export; '2.1.283 …' and '1.5x …' keep their numbers, '1. ' numbering is stripped"
 
 # ═════════════════════════════════════════════════════════════════════════
 setup "near-duplicate guard: same topic under a new slug is dropped, new topic kept"
@@ -1076,6 +1100,12 @@ jobs:
       - run: gh release create "$GITHUB_REF_NAME" --generate-notes
 EOF2
 if bash "$SRC_ROOT/test/ci-policy.sh" "$W/rel.yml" > "$W/rel.txt" 2>&1; then fail "unattested release passed the policy"; fi
+# flow-style top-level grant, and an SBOM mentioned only in a comment, are caught too
+sed -e 's/^permissions:$/permissions: { contents: read, id-token: write }/' -e '/^  contents: write$/d' -e '/^  id-token: write$/d' "$W/rel.yml" > "$W/rel2.yml"
+printf '      # TODO: add an sbom step\n      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2\n' >> "$W/rel2.yml"
+if bash "$SRC_ROOT/test/ci-policy.sh" "$W/rel2.yml" > "$W/rel2.txt" 2>&1; then fail "flow-style id-token / comment-only SBOM passed: $(cat "$W/rel2.txt")"; fi
+grep -q "R6 id-token: write granted at the top level" "$W/rel2.txt" || fail "flow-style top-level id-token missed: $(cat "$W/rel2.txt")"
+grep -q "R7 release without an SBOM" "$W/rel2.txt" || fail "a comment satisfied the SBOM rule: $(cat "$W/rel2.txt")"
 for r in "R6 id-token: write granted at the top level" "R7 release without build-provenance attestation" "R7 release without an SBOM"; do
   grep -q "$r" "$W/rel.txt" || fail "policy missed: $r ($(cat "$W/rel.txt"))"
 done
@@ -1172,7 +1202,10 @@ mkdir -p "$W/src"; cp -R "$SRC_ROOT/bin" "$SRC_ROOT/lib" "$SRC_ROOT/prompts" "$S
 sed -i.bak -e '/\["key",/d' -e '/\["github",/d' "$W/src/lib/redact.sh"
 printf '%s\n' "$(jq -nc '{type:"user",cwd:"/Users/dev/src/turbo-flow",message:{role:"user",content:"Moved the ingest workers onto a dedicated node pool with taints so noisy batch jobs cannot starve the API pods; tolerations live in the worker chart and the pool autoscales from zero."}}')" >> "$TX"
 if "$LW_BASH" "$W/src/bin/loopwatch-run.sh" --dry-run 2> "$W/b.log"; then fail "canary masked by redact.list terms"; fi
-grep -q "a canary secret survived scrubbing" "$W/b.log" || fail "reason: $(grep FATAL "$W/b.log")"
+# (log lines are scrubbed with redact.list too, so these terms mangle the log text; the
+# ledger reason is the stable signal)
+jq -e '.skipped_reason == "canary_leak"' <(ledger_last) >/dev/null || fail "reason: $(ledger_last | jq -c .skipped_reason) $(grep FATAL "$W/b.log")"
+grep -q "secret survived scrubbing" "$W/b.log" || fail "log reason: $(grep FATAL "$W/b.log")"
 : > "$H/.config/loopwatch/redact.list"
 # (3) cost guard fails closed: corrupt ledger line, bad cap value
 M="$(date +%Y-%m)"

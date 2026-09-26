@@ -183,7 +183,7 @@ parse_triage() {
              and ((.highlights // []) | type == "array" or type == "string")
              and (.candidates | type == "array"))
     | .highlights = ((.highlights // [])
-        | if type == "string" then split("\n") | map(sub("^\\s*([-*•]|[0-9]+[.)])\\s*"; "") | sub("\\s+$"; "")) else . end
+        | if type == "string" then split("\n") | map(sub("^\\s*(?:[-*•]|[0-9]+[.)])(?:\\s+|$)"; "") | sub("\\s+$"; "")) else . end
         | map(select(type == "string" and length > 0)) | .[:8])
     | .candidates = (.candidates
         | map(select(type == "object" and (.id | type == "string") and (.id | test("^[a-z0-9-]{1,24}$"))

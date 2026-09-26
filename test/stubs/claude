@@ -41,10 +41,12 @@ done
 input="$(cat)"
 # STUB_SLEEP holds the run lock long enough to race it; STUB_HOLD_LOG records each call's
 # [start, end] (ns) so a test can prove no two runs were ever inside the lock at once
+# (BSD date has no %N, so the clock is perl's Time::HiRes, present on stock macOS and Linux)
+hires() { perl -MTime::HiRes=time -e 'printf "%.0f\n", time * 1e9' 2>/dev/null || echo "$(date +%s)000000000"; }
 if [[ -n "${STUB_SLEEP:-}" ]]; then
-  [[ -z "${STUB_HOLD_LOG:-}" ]] || echo "$(date +%s%N) +1 $$" >> "$STUB_HOLD_LOG"
+  [[ -z "${STUB_HOLD_LOG:-}" ]] || echo "$(hires) +1 $$" >> "$STUB_HOLD_LOG"
   sleep "$STUB_SLEEP"
-  [[ -z "${STUB_HOLD_LOG:-}" ]] || echo "$(date +%s%N) -1 $$" >> "$STUB_HOLD_LOG"
+  [[ -z "${STUB_HOLD_LOG:-}" ]] || echo "$(hires) -1 $$" >> "$STUB_HOLD_LOG"
 fi
 
 stage=extract
@@ -143,13 +145,16 @@ pg() {  # pg <slug> <title> [extra-body-html] [category]
     body_html: ("<h2>Decision</h2><p>CronJob + queue; worker must be idempotent.</p>" + $b)}'
 }
 p=""
-add() { p="${p:+$p,}$1"; }
+add() { p="${p:+$p,}${1//\{\}/}"; }
 case "${STUB_PAGES:-one}" in
   none) ;;
   malformed)    # one good page, one with a non-string body, one reusing the good slug
        add "$(pg k8s-cronjob-queue-ingest "Title ONE" "<p>BODY ONE</p>")"
        add '{"candidate_id":"c1","slug":"object-body-page","title":"x","category":"ideas","tags":[],"summary":"x","source":"x","body_html":{"x":1}}'
        add "$(pg k8s-cronjob-queue-ingest "Title TWO" "<p>BODY TWO</p>")" ;;
+  secretcode)   # a page whose invented code holds a secret: grounding logs its tokens before postscan drops it
+       add "$(pg leaky-env-page "Env setup for the ingest workers" '<pre><code>export ANTHROPIC_API_KEY=sk-ant-api03-{}AbCdEfGhIjKlMnOpQrStUvWx1234
+helm upgrade ingest ./charts/ingest --set queue.maxRetries=7</code></pre>')" ;;
   grounding)    # one page whose code comes from the transcript, one that invents its commands
        add "$(pg grounded-cronjob-page "CronJob pinned to spot with a PDB" '<pre><code>kubectl get cronjobs
 activeDeadlineSeconds: 600

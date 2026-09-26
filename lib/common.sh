@@ -6,9 +6,16 @@
 # Level comes from the prefix: "FATAL: " = error, "WARN: " = warn, else info. trace_id is the
 # run's OTel trace, so log lines and spans correlate. LOG_FORMAT=json puts JSON on stderr too.
 log() {
-  local line level=info msg="$*"
+  local line level=info raw="$*" msg
+  # Once the run's redaction rules exist, every log line is scrubbed with them: some lines
+  # quote model output (grounding tokens) before postscan has run, and the JSON log can be
+  # shipped to a remote OTel collector. No canary bookkeeping here (that is scrub_all's).
+  if [[ -n "${RULES_JSON:-}" && -f "$RULES_JSON" ]]; then
+    raw="$(printf '%s' "$raw" | jq -rRs --slurpfile rules "$RULES_JSON" 'reduce $rules[0][] as $r (.; gsub($r.re; $r.repl; $r.flags))' 2>/dev/null || printf '%s' '[log line withheld: scrub failed]')"
+  fi
+  msg="$raw"
   case "$msg" in "FATAL: "*) level=error; msg="${msg#FATAL: }" ;; "WARN: "*) level=warn; msg="${msg#WARN: }" ;; esac
-  line="$(date +%T) $*"
+  line="$(date +%T) $raw"
   printf '%s\n' "$line" >> "${LOG:-/dev/null}"
   if [[ -n "${LOG_JSONL:-}" || "${LOG_FORMAT:-text}" == json ]]; then
     local j

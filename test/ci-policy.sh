@@ -35,11 +35,13 @@ for f in "${files[@]}"; do
        END { if (pending && !seen) bad++; exit bad > 0 }' "$f" || v "$f" "R3 checkout without persist-credentials: false"
   grep -qE '^[[:space:]]*pull_request_target:|pull_request_target' "$f" && v "$f" "R4 pull_request_target trigger"
   grep -qE '\$\{\{[^}]*(github\.event\.|github\.head_ref)' "$f" && v "$f" "R4 attacker-controlled expression"
-  awk '/^permissions:/ { top = 1; next } top && /^[^[:space:]#]/ { top = 0 }
+  awk '/^permissions:.*id-token:[[:space:]]*write/ { found = 1 }
+       /^permissions:/ { top = 1; next } top && /^[^[:space:]#]/ { top = 0 }
        top && /id-token:[[:space:]]*write/ { found = 1 } END { exit !found }' "$f" && v "$f" "R6 id-token: write granted at the top level"
   if grep -qE 'gh release (create|upload)|softprops/action-gh-release' "$f"; then
     grep -qE 'uses:[[:space:]]*actions/attest-build-provenance@' "$f" || v "$f" "R7 release without build-provenance attestation"
-    grep -qiE 'sbom|spdx|cyclonedx' "$f" || v "$f" "R7 release without an SBOM"
+    grep -vE '^[[:space:]]*#' "$f" | grep -qiE '(sbom|spdx|cyclonedx)[^[:space:]]*\.(json|xml)|loopwatch-sbom\.sh|anchore/sbom-action@|syft ' \
+      || v "$f" "R7 release without an SBOM"
   fi
   jobs="$(grep -cE '^[[:space:]]+runs-on:' "$f")"; to="$(grep -cE '^[[:space:]]+timeout-minutes:' "$f")"
   [[ "$jobs" == "$to" ]] || v "$f" "R5 $jobs job(s) but $to timeout-minutes"
