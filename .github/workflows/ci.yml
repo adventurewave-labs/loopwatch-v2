@@ -48,14 +48,31 @@ jobs:
         shell: bash
         run: |
           if [ "$RUNNER_OS" = "macOS" ]; then /bin/bash test/eval/run-eval.sh; else bash test/eval/run-eval.sh; fi
-      - name: scrubber coverage (53 secret kinds, false-positive guard)
+      - name: scrubber coverage (56 secret kinds, false-positive guard)
         shell: bash
         run: |
           if [ "$RUNNER_OS" = "macOS" ]; then /bin/bash test/scrub/run-coverage.sh; else bash test/scrub/run-coverage.sh; fi
-      - name: validator fuzz (1,406 XSS/exfil cases, both layers; passers must be browser-proven inert)
+      - name: watermark properties (random append/partial/truncate/rotate/failed-run sequences; no line lost or duplicated)
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then /bin/bash test/prop/watermarks.sh; else bash test/prop/watermarks.sh; fi
+      - name: validator fuzz (1,550 XSS/exfil cases, both layers; passers must be browser-proven inert)
         shell: bash
         run: |
           if [ "$RUNNER_OS" = "macOS" ]; then /bin/bash test/fuzz/run-fuzz.sh; else bash test/fuzz/run-fuzz.sh; fi
+
+  mutation:
+    # ~16 min, so weekly and on demand only: breaks each safety check on purpose and fails
+    # if the suites stop noticing (mutation score below 100% of the scored mutants)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: mutation testing of the safety code
+        run: MUT_MIN_SCORE=100 bash test/mutation/run-mutation.sh
 
   shellcheck:
     runs-on: ubuntu-latest
@@ -65,6 +82,6 @@ jobs:
         with:
           persist-credentials: false
       - name: shellcheck (error severity)
-        run: shellcheck -S error bin/* lib/*.sh test/*.sh test/stubs/* test/eval/*.sh test/eval/replay-claude test/fuzz/*.sh test/scrub/*.sh test/ci-policy.sh catalog-template/test/*.sh
+        run: shellcheck -S error bin/* lib/*.sh test/*.sh test/stubs/* test/eval/*.sh test/eval/replay-claude test/fuzz/*.sh test/scrub/*.sh test/prop/*.sh test/mutation/*.sh test/ci-policy.sh catalog-template/test/*.sh
       - name: CI supply-chain policy (pinned SHAs, least privilege, no persisted creds, no injection vectors)
         run: bash test/ci-policy.sh

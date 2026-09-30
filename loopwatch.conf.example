@@ -51,6 +51,15 @@ SKIP_EMPTY=true
 # double) with an existing catalog entry reaches this score is skipped. 0 = off.
 NEAR_DUP_THRESHOLD=0.55
 
+# Related pages: each new page gets a static "Related" list (BM25 over title, tags and summary)
+# linking up to RELATED_PAGES catalog pages that score at least RELATED_MIN_SCORE. 0 = off.
+RELATED_PAGES=3
+RELATED_MIN_SCORE=1.5
+
+# Retention: run logs, failure autopsies and the private copies of skipped pages older than
+# this many days are deleted at the start of each run (0 = keep forever). The ledger is kept.
+RETENTION_DAYS=30
+
 # ── Telemetry (optional) ─────────────────────────────────────────────────
 # Each run as an OTLP/JSON trace using the OpenTelemetry GenAI semantic conventions
 # (gen_ai.request.model, gen_ai.usage.input_tokens, ...). Counts and costs only, no content.

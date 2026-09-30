@@ -39,6 +39,11 @@
 <iframe src="https://evil.example/"></iframe>
 <iframe srcdoc="<script>alert(1)</script>"></iframe>
 <iframe src="javascript:alert(1)"></iframe>
+<iframe src="page.html"></iframe>
+<object data="doc.pdf"></object>
+<embed src="movie.swf">
+<br onmouseover="alert(1)">
+<hr style="background:url(//evil.example/x)">
 <frameset><frame src="javascript:alert(1)"></frameset>
 <object data="javascript:alert(1)"></object>
 <object data="//evil.example/x.swf"></object>

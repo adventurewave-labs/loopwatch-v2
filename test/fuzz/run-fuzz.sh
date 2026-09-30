@@ -33,6 +33,14 @@ mkdir -p "$W/l1"
 bash -c "source '$SRC_ROOT/lib/extract.sh'; jq -c \"\$BODY_GATE_JQ\"' {id, body: (.body | neutralize)} | . + {ok: (.body | body_ok)}' '$W/cases.jsonl'" > "$W/l1.jsonl"
 n_gate_fail="$(jq -s 'map(select(.ok | not)) | length' "$W/l1.jsonl")"
 [[ "$n_gate_fail" == 0 ]] || fail "layer 1: $n_gate_fail neutralized bodies still hold non-allowlisted markup"
+# ...judged independently too: the gate shares allowed_tail with neutralize, so a loosened
+# allowlist would pass its own gate. This regex is the test's own copy of the contract.
+n_indep="$(jq -s '[.[] | .body | [scan("<[A-Za-z/!?][^<>]*>?")][]
+  | select(test("^</?(h2|h3|h4|p|ul|ol|li|pre|code|strong|em|b|i|table|thead|tbody|tr|th|td|blockquote)>$|^<(br|hr) ?/?>$") | not)] | length' "$W/l1.jsonl")"
+[[ "$n_indep" == 0 ]] || fail "layer 1: $n_indep tag(s) outside the bare-tag contract survived neutralize"
+# the gate is the backstop behind neutralize, so it must reject the RAW markup neutralize rewrote
+n_gate_open="$(bash -c "source '$SRC_ROOT/lib/extract.sh'; jq -c \"\$BODY_GATE_JQ\"' select((.body | neutralize) != .body and (.body | body_ok)) | .id' '$W/cases.jsonl'" | wc -l | tr -d ' ')"
+[[ "$n_gate_open" == 0 ]] || fail "layer 1: the gate accepted $n_gate_open raw bodies that neutralize had to rewrite"
 jq -s '[.[] | {candidate_id: "c1", slug: ("fz-" + .id), title: "fuzz", category: "ideas", tags: [], summary: "fuzz", source: "fuzz", body_html: .body}]' "$W/l1.jsonl" > "$W/l1/pages.json"
 RUN_DIR="$W/l1" RUN_DATE=2026-01-01 bash -c "source '$SRC_ROOT/lib/extract.sh'; render_page_files '$W/l1/pages.json'"
 # layer 2: render every case (gate bypassed) through the real renderer, judge with html_problem
@@ -41,9 +49,12 @@ RUN_DIR="$W" RUN_DATE=2026-01-01 bash -c "
   log() { :; }
   source '$SRC_ROOT/lib/extract.sh'; render_page_files '$W/all-pages.json'"
 n_rendered="$(find "$W/pages" -name '*.html' | wc -l | tr -d ' ')"
-find "$W/pages" -name '*.html' | sort | xargs -P 8 -I{} bash -c "
-  p=\"\$(source '$SRC_ROOT/lib/publish.sh'; html_problem '{}')\" || p='validator-error'
-  f='{}'; id=\"\${f##*/fz-}\"; printf '%s\t%s\n' \"\${id%.html}\" \"\${p:-PASS}\"" > "$W/verdicts.tsv"
+# The page path is passed as an argument, not via -I{}: BSD xargs caps an -I command at
+# 255 bytes ("command line cannot be assembled, too long"), which broke this on macOS.
+# shellcheck disable=SC2016  # the script is single-quoted on purpose: it expands in the child
+find "$W/pages" -name '*.html' | sort | xargs -P 8 -n 1 bash -c '
+  p="$(source "$1/lib/publish.sh"; html_problem "$2")" || p=validator-error
+  id="${2##*/fz-}"; printf "%s\t%s\n" "${id%.html}" "${p:-PASS}"' _ "$SRC_ROOT" > "$W/verdicts.tsv"
 n_cases="$(wc -l < "$W/cases.jsonl" | tr -d ' ')"
 [[ "$n_rendered" == "$n_cases" ]] || fail "rendered $n_rendered of $n_cases cases"
 grep -q $'\tvalidator-error$' "$W/verdicts.tsv" && fail "validator crashed on: $(grep $'\tvalidator-error$' "$W/verdicts.tsv" | head -3 | cut -f1 | tr '\n' ' ')"

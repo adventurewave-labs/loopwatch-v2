@@ -1,7 +1,32 @@
 #!/usr/bin/env bash
 # loopwatch lib — shared helpers (sourced; do not execute). bash 3.2 + BSD/GNU userland safe.
 
-log() { printf '%s %s\n' "$(date +%T)" "$*" | tee -a "${LOG:-/dev/null}" >&2; }
+# log: human line "HH:MM:SS msg" to stderr and $LOG (unchanged), plus one structured JSON line
+# per event to $LOG_JSONL when set: {ts (UTC), t (epoch s), level, run_id, trace_id, msg}.
+# Level comes from the prefix: "FATAL: " = error, "WARN: " = warn, else info. trace_id is the
+# run's OTel trace, so log lines and spans correlate. LOG_FORMAT=json puts JSON on stderr too.
+log() {
+  local line level=info raw="$*" msg
+  # Once the run's redaction rules exist, every log line is scrubbed with them: some lines
+  # quote model output (grounding tokens) before postscan has run, and the JSON log can be
+  # shipped to a remote OTel collector. No canary bookkeeping here (that is scrub_all's).
+  if [[ -n "${RULES_JSON:-}" && -f "$RULES_JSON" ]]; then
+    raw="$(printf '%s' "$raw" | jq -rRs --slurpfile rules "$RULES_JSON" 'reduce $rules[0][] as $r (.; gsub($r.re; $r.repl; $r.flags))' 2>/dev/null || printf '%s' '[log line withheld: scrub failed]')"
+  fi
+  msg="$raw"
+  case "$msg" in "FATAL: "*) level=error; msg="${msg#FATAL: }" ;; "WARN: "*) level=warn; msg="${msg#WARN: }" ;; esac
+  line="$(date +%T) $raw"
+  printf '%s\n' "$line" >> "${LOG:-/dev/null}"
+  if [[ -n "${LOG_JSONL:-}" || "${LOG_FORMAT:-text}" == json ]]; then
+    local j
+    j="$(jq -nc --arg l "$level" --arg m "$msg" --arg r "${RUN_TS:-}" --arg tr "${RUN_TRACE_ID:-}" \
+          '{ts: (now | strftime("%Y-%m-%dT%H:%M:%SZ")), t: (now * 1000 | floor / 1000), level: $l, run_id: $r}
+           + (if $tr == "" then {} else {trace_id: $tr} end) + {msg: $m}' 2>/dev/null || true)"
+    [[ -z "${LOG_JSONL:-}" || -z "$j" ]] || printf '%s\n' "$j" >> "$LOG_JSONL"
+    if [[ "${LOG_FORMAT:-text}" == json && -n "$j" ]]; then printf '%s\n' "$j" >&2; return 0; fi
+  fi
+  printf '%s\n' "$line" >&2
+}
 
 # sha256 of a string, first 16 hex chars — used for state keys so absolute
 # paths (which can carry client project names) never land in state files.
@@ -251,6 +276,26 @@ cost_anomaly() {
            | if $c >= $f * $med then ($med * 10000 | round / 10000) else empty end end' "$LEDGER" 2>/dev/null || true
 }
 
+# ── data retention ──────────────────────────────────────────────────────
+# retention_prune: delete what loopwatch keeps on disk beyond RETENTION_DAYS (default 30;
+# 0 = keep forever): run logs, failure autopsies (whole run dirs, scrubbed bundle included),
+# and the private copies of near-duplicate and ungrounded pages. The ledger (counts and costs
+# only, no content) and the watermarks are never pruned. Sets PRUNED to the entries removed.
+PRUNED=0
+retention_prune() {
+  local days="${RETENTION_DAYS:-30}" d e
+  [[ "$days" =~ ^[0-9]+$ ]] || { DIE_REASON=bad_config; die "RETENTION_DAYS='$days' is not a whole number of days (0 = keep forever)"; }
+  [[ "$days" -gt 0 ]] || return 0
+  for d in "$STATE_DIR/logs" "$STATE_DIR/failed" "$STATE_DIR/private/near-dups" "$STATE_DIR/private/ungrounded"; do
+    [[ -d "$d" ]] || continue
+    while IFS= read -r e; do
+      [[ -n "$e" && "$e" == "$d/"* ]] || continue
+      rm -rf "$e" && PRUNED=$((PRUNED + 1))
+    done < <(find "$d" -mindepth 1 -maxdepth 1 -mtime +"$days" 2>/dev/null)
+  done
+  [[ "$PRUNED" -eq 0 ]] || log "retention: pruned $PRUNED entr$([[ "$PRUNED" -eq 1 ]] && echo y || echo ies) older than $days days"
+}
+
 # ── run ledger (Turbo Rig seam, R-12) ───────────────────────────────────
 # One JSON line per run in $LEDGER, field names aligned with Turbo Rig's
 # gate-log (ts, repo, target, model, in, cached, out, cost_usd, duration_ms)
@@ -273,10 +318,10 @@ ledger_append() {
     --argjson trimmed "${TRIMMED_BYTES:-0}" \
     --argjson drops "${POSTSCAN_DROPS:-0}" \
     --argjson vdrops "${VALIDATOR_DROPS:-0}" \
-    --argjson ndrops "${NEAR_DUP_DROPS:-0}" \
+    --argjson ndrops "${NEAR_DUP_DROPS:-0}" --argjson rel "${RELATED_LINKS:-0}" \
     --arg pv "${PROMPT_VERSION:-}" \
     --arg canary "${CANARY_STATUS:-}" \
-    --argjson gdrops "${GROUNDING_DROPS:-0}" --argjson ungr "${UNGROUNDED_TOKENS:-0}" \
+    --argjson gdrops "${GROUNDING_DROPS:-0}" --argjson ungr "${UNGROUNDED_TOKENS:-0}" --argjson pruned "${PRUNED:-0}" \
     --arg anom "${COST_ANOMALY_MEDIAN:-}" \
     --argjson cstreams "$( [[ -f "${RUN_DIR:-/nonexistent}/.canary-streams" ]] && wc -l < "$RUN_DIR/.canary-streams" | tr -d ' ' || echo 0)" \
     --arg sbskip "${STAGE_B_SKIP:-}" \
@@ -285,7 +330,7 @@ ledger_append() {
       ts: $ts, repo: "loopwatch", target: $target,
       prompt_version: (if $pv == "" then null else $pv end),
       canary: (if $canary == "" then null else $canary end), canary_streams: $cstreams,
-      grounding_drops: $gdrops, ungrounded_tokens: $ungr,
+      grounding_drops: $gdrops, ungrounded_tokens: $ungr, pruned: $pruned,
       cost_anomaly: ($anom != ""), cost_median_usd: (if $anom == "" then null else ($anom | tonumber) end),
       model: ((map(.model) | unique | join("+")) | if . == "" then null else . end),
       in:      (map(.in)       | add // 0),
@@ -300,7 +345,7 @@ ledger_append() {
       skipped_reason: (if $skipped == "" then null else $skipped end),
       status: $status, run_id: $run_id, dry_run: $dry,
       bundle_bytes: $bundle_bytes, trimmed_bytes: $trimmed, postscan_drops: $drops,
-      validator_drops: $vdrops, near_dup_drops: $ndrops,
+      validator_drops: $vdrops, near_dup_drops: $ndrops, related_links: $rel,
       stage_b_skipped: (if $sbskip == "" then null else $sbskip end),
       attempts: length,
       retries: (length - (map(.stage) | unique | length)),

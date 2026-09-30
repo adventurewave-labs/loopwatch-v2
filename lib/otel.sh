@@ -16,6 +16,9 @@
 #   OTEL_EXPORTER_OTLP_ENDPOINT    also POST it to <endpoint>/v1/traces (standard OTel env var;
 #   OTEL_EXPORTER_OTLP_HEADERS     "k=v,k2=v2" headers, e.g. an API key; 5s timeout)
 #   Both unset = no export. Export problems are logged and never fail the run.
+#   The run's structured log ($LOG_JSONL) goes out the same way as OTLP logs
+#   (<run_id>.otlp-logs.json, POST /v1/logs), each record carrying the run's traceId and the
+#   root spanId, so a backend links every log line to its trace.
 
 otel_hex() { od -An -tx1 -N"$1" /dev/urandom | tr -d ' \n'; }
 
@@ -27,8 +30,8 @@ otel_payload() {  # otel_payload <ledger-row-json> <usage-file>  -> OTLP/JSON on
   for (( i = 0; i < n; i++ )); do sids+=("$(otel_hex 8)"); done
   jq -sc \
     --argjson row "$row" \
-    --arg trace "$(otel_hex 16)" \
-    --arg root "$(otel_hex 8)" \
+    --arg trace "${RUN_TRACE_ID:-$(otel_hex 16)}" \
+    --arg root "${RUN_ROOT_SPAN:-$(otel_hex 8)}" \
     --arg sids "${sids[*]:-}" \
     --arg version "$version" \
     --argjson start "${RUN_START:-0}" \
@@ -89,40 +92,67 @@ otel_payload() {  # otel_payload <ledger-row-json> <usage-file>  -> OTLP/JSON on
           )}]}]}' "$usage"
 }
 
+otel_logs_payload() {  # otel_logs_payload <ledger-row-json> <log-jsonl> -> OTLP/JSON logs on stdout
+  local version; version="$(cat "$ROOT_DIR/VERSION" 2>/dev/null || echo unknown)"
+  jq -sc --argjson row "$1" --arg version "$version" \
+    --arg trace "${RUN_TRACE_ID:-}" --arg root "${RUN_ROOT_SPAN:-}" '
+    def sev: {"info": [9, "INFO"], "warn": [13, "WARN"], "error": [17, "ERROR"]}[.] // [9, "INFO"];
+    {resourceLogs: [{
+      resource: {attributes: [{key: "service.name", value: {stringValue: "loopwatch"}},
+                              {key: "service.version", value: {stringValue: $version}}]},
+      scopeLogs: [{scope: {name: "loopwatch", version: $version},
+        logRecords: [ .[] | (.level | sev) as $s | {
+          timeUnixNano: ((.t // 0) * 1000000000 | floor | tostring),
+          severityNumber: $s[0], severityText: $s[1],
+          body: {stringValue: .msg},
+          attributes: [{key: "loopwatch.run_id", value: {stringValue: ($row.run_id // .run_id)}}] }
+          + (if $trace == "" then {} else {traceId: $trace, spanId: $root} end) ]}]}]}' "$2"
+}
+
+# otel_post <signal> <payload>: POST OTLP/JSON to <endpoint>/v1/<signal> (traces|logs)
+otel_post() {
+  local signal="$1" payload="$2" hfile kv k v code
+  # Headers (usually an API key) go through a 0600 file read by `curl -H @file`, never argv,
+  # where any local user could read them via ps or /proc. Parsed per the OTel spec:
+  # comma-separated key=value, whitespace trimmed, values percent-decoded.
+  hfile="$(mktemp "${TMPDIR:-/tmp}/loopwatch-otel.XXXXXX")" || { log "WARN: otel header file"; return 0; }
+  chmod 600 "$hfile"
+  {
+    echo "Content-Type: application/json"
+    if [[ -n "${OTEL_EXPORTER_OTLP_HEADERS:-}" ]]; then
+      while IFS= read -r kv || [[ -n "$kv" ]]; do
+        [[ "$kv" == *=* ]] || continue
+        k="$(printf '%s' "${kv%%=*}" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+        v="$(printf '%s' "${kv#*=}" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+        v="$(printf '%s' "$v" | sed 's/%\([0-9A-Fa-f][0-9A-Fa-f]\)/\\x\1/g')"; v="$(printf '%b' "$v")"
+        [[ -n "$k" && "$k" != *[!A-Za-z0-9_-]* ]] || { log "WARN: skipping malformed OTLP header name"; continue; }
+        printf '%s: %s\n' "$k" "$v"
+      done < <(printf '%s' "$OTEL_EXPORTER_OTLP_HEADERS" | tr ',' '\n')
+    fi
+  } > "$hfile"
+  code="$(printf '%s' "$payload" | curl -sS -o /dev/null -w '%{http_code}' --max-time 5 \
+            -X POST -H "@$hfile" --data-binary @- "${OTEL_EXPORTER_OTLP_ENDPOINT%/}/v1/$signal" 2>/dev/null || true)"
+  rm -f "$hfile"
+  [[ "$code" == 2* ]] || log "WARN: OTLP export to collector returned ${code:-no answer} ($signal)"
+}
+
 otel_export() {
-  local row="$1" usage="${USAGE_FILE:-/dev/null}" payload run_id
+  local row="$1" usage="${USAGE_FILE:-/dev/null}" payload logs="" run_id
   [[ -n "${OTEL_EXPORT_DIR:-}" || -n "${OTEL_EXPORTER_OTLP_ENDPOINT:-}" ]] || return 0
   [[ -f "$usage" ]] || usage=/dev/null
   payload="$(otel_payload "$row" "$usage")" || { log "WARN: otel payload build failed"; return 0; }
+  if [[ -s "${LOG_JSONL:-}" ]]; then
+    logs="$(otel_logs_payload "$row" "$LOG_JSONL")" || { log "WARN: otel logs payload build failed"; logs=""; }
+  fi
   run_id="$(jq -r '.run_id' <<< "$row")"
   if [[ -n "${OTEL_EXPORT_DIR:-}" ]]; then
     mkdir -p "$OTEL_EXPORT_DIR"
     printf '%s\n' "$payload" > "$OTEL_EXPORT_DIR/$run_id.otlp.json" || log "WARN: otel file export failed"
+    [[ -z "$logs" ]] || printf '%s\n' "$logs" > "$OTEL_EXPORT_DIR/$run_id.otlp-logs.json" || log "WARN: otel logs file export failed"
   fi
   if [[ -n "${OTEL_EXPORTER_OTLP_ENDPOINT:-}" ]]; then
-    # Headers (usually an API key) go through a 0600 file read by `curl -H @file`, never argv,
-    # where any local user could read them via ps or /proc. Parsed per the OTel spec:
-    # comma-separated key=value, whitespace trimmed, values percent-decoded.
-    local hfile kv k v code
-    hfile="$(mktemp "${TMPDIR:-/tmp}/loopwatch-otel.XXXXXX")" || { log "WARN: otel header file"; return 0; }
-    chmod 600 "$hfile"
-    {
-      echo "Content-Type: application/json"
-      if [[ -n "${OTEL_EXPORTER_OTLP_HEADERS:-}" ]]; then
-        while IFS= read -r kv || [[ -n "$kv" ]]; do
-          [[ "$kv" == *=* ]] || continue
-          k="$(printf '%s' "${kv%%=*}" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
-          v="$(printf '%s' "${kv#*=}" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
-          v="$(printf '%s' "$v" | sed 's/%\([0-9A-Fa-f][0-9A-Fa-f]\)/\\x\1/g')"; v="$(printf '%b' "$v")"
-          [[ -n "$k" && "$k" != *[!A-Za-z0-9_-]* ]] || { log "WARN: skipping malformed OTLP header name"; continue; }
-          printf '%s: %s\n' "$k" "$v"
-        done < <(printf '%s' "$OTEL_EXPORTER_OTLP_HEADERS" | tr ',' '\n')
-      fi
-    } > "$hfile"
-    code="$(printf '%s' "$payload" | curl -sS -o /dev/null -w '%{http_code}' --max-time 5 \
-              -X POST -H "@$hfile" --data-binary @- "${OTEL_EXPORTER_OTLP_ENDPOINT%/}/v1/traces" 2>/dev/null || true)"
-    rm -f "$hfile"
-    [[ "$code" == 2* ]] || log "WARN: OTLP export to collector returned ${code:-no answer}"
+    otel_post traces "$payload"
+    [[ -z "$logs" ]] || otel_post logs "$logs"
   fi
   return 0
 }

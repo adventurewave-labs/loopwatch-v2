@@ -192,6 +192,60 @@ near_dups() {
     ) | .out[] | @tsv' "$meta"
 }
 
+# add_related <meta-final>: a static "Related" list in each newly installed page, just above
+# its footer (plain links, no JS, so the page CSP stays script-free). Ranking is BM25 over the
+# catalog (existing entries + this run's pages): the new page's title, tags and summary are
+# the query; each document is its title and tags (weighted x2) plus its summary; k1=1.2,
+# b=0.75. Up to RELATED_PAGES (3; 0 = off) links above RELATED_MIN_SCORE (1.5). Hrefs are built
+# only from catalog paths shaped pages/<year>/<slug>.html and titles are HTML-escaped; the
+# page is re-validated afterwards and keeps its old form if the list would trip anything.
+# Older pages are immutable, so links point backwards (and across this run) only.
+add_related() {
+  local meta="$1" n="${RELATED_PAGES:-3}" min="${RELATED_MIN_SCORE:-1.5}" row slug path nav f
+  [[ "$n" =~ ^[0-9]+$ ]] || { log "WARN: RELATED_PAGES='$n' is not a whole number; using 3"; n=3; }
+  [[ "$n" -gt 0 ]] || return 0
+  [[ "$min" =~ ^[0-9]+(\.[0-9]+)?$ ]] || { log "WARN: RELATED_MIN_SCORE='$min' is not a number; using 1.5"; min=1.5; }
+  RELATED_LINKS=0
+  while IFS= read -r row; do
+    slug="$(jq -r '.slug' <<< "$row")"; path="$(jq -r '.path' <<< "$row")"; nav="$(jq -r '.nav' <<< "$row")"
+    f="$SITE_DIR/$path"
+    [[ -f "$f" ]] || continue
+    jq -Rrs --arg nav "$nav" 'sub("\n<footer>"; "\n" + $nav + "\n<footer>")' "$f" > "$f.rel"
+    if [[ -n "$(html_problem "$f.rel")" ]] || ! grep -qF "$nav" "$f.rel"; then
+      log "WARN: related list for $slug not added (failed re-validation)"; rm -f "$f.rel"; continue
+    fi
+    mv "$f.rel" "$f"
+    RELATED_LINKS=$(( RELATED_LINKS + $(grep -o '<li><a href=' <<< "$nav" | wc -l | tr -d ' ') ))
+  done < <(jq -r --slurpfile m "$MANIFEST" --argjson n "$n" --argjson min "$min" '
+    def stop: ["the","and","for","with","from","into","that","this","via","when","why","how",
+               "are","was","not","but","its","our","use","using","vs","per","one","two","all"];
+    def toks: ascii_downcase | [scan("[a-z0-9]+")] | map(select(length > 2))
+              | map(if (length > 3 and endswith("s") and (endswith("ss") | not)) then .[:-1] else . end)
+              | map(select(. as $t | stop | index($t) | not));
+    def terms: ((.title // "") | toks) as $t | (((.tags // []) | map(tostring) | join(" ")) | toks) as $g
+               | $t + $t + $g + $g + ((.summary // "") | toks);
+    def tf: reduce .[] as $w ({}; .[$w] += 1);
+    def safe_path: type == "string" and test("^pages/[0-9]{4}/[a-z0-9][a-z0-9-]*\\.html$");
+    ([$m[0].entries[], .pages[]] | map(select(.path | safe_path)) | map(. + {tf: (terms | tf), len: (terms | length)})) as $docs
+    | ($docs | length) as $N
+    | (if $N == 0 then 1 else ($docs | map(.len) | add) / $N end) as $avg
+    | (reduce ($docs[] | .tf | keys[]) as $w ({}; .[$w] += 1)) as $df
+    | .pages[] | . as $p | select(.path | safe_path)
+    | (terms | unique) as $q
+    | [ $docs[] | select(.slug != $p.slug) | . as $d
+        | {title, path,
+           score: ([ $q[] | . as $w | ($d.tf[$w] // 0) as $f | select($f > 0)
+                     | (((($N - $df[$w] + 0.5) / ($df[$w] + 0.5)) + 1) | log)
+                       * ($f * 2.2) / ($f + 1.2 * (0.25 + 0.75 * $d.len / $avg)) ] | add // 0)} ]
+    | map(select(.score >= $min)) | sort_by(-.score) | .[:$n]
+    | select(length > 0)
+    | {slug: $p.slug, path: $p.path,
+       nav: ("<nav><h2>Related</h2><ul>"
+         + (map("<li><a href=\"../" + (.path | ltrimstr("pages/") | @html) + "\">" + (.title | tostring | @html) + "</a></li>") | join(""))
+         + "</ul></nav>")} | @json' "$meta")
+  [[ "$RELATED_LINKS" -eq 0 ]] || log "related: $RELATED_LINKS link(s) added to new pages"
+}
+
 publish_run() {
   local meta="$1"
   local year installed=0 skipped=0
@@ -232,6 +286,7 @@ publish_run() {
       | map(select(.slug as $s | $keep | index($s)))
       | map(. + {path: ("pages/" + $year + "/" + .slug + ".html"), date: $date}))
   ' "$meta" > "$RUN_DIR/meta-final.json"
+  add_related "$RUN_DIR/meta-final.json"
 
   # digest (unique name if a same-day run already published one)
   local digest_name="$RUN_DATE"

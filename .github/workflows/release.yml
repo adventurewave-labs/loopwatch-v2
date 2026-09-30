@@ -12,19 +12,40 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
-      contents: write   # only this job, only to create the GitHub release
+      contents: write      # create the GitHub release and upload its assets
+      id-token: write      # sign the build-provenance attestation (Sigstore, via OIDC)
+      attestations: write  # store the attestation on the repo
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
       - name: e2e gate — never release untested
         run: ./test/smoke-test.sh
-      - name: publish GitHub release
+      - name: build release tarball, SBOM and checksums
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          # reproducible: both artifacts are pinned to the tagged commit's time
+          export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct HEAD)"
+          git archive --format=tar --prefix="loopwatch-$GITHUB_REF_NAME/" HEAD | gzip -n > "dist/loopwatch-$GITHUB_REF_NAME.tar.gz"
+          bash bin/loopwatch-sbom.sh > "dist/loopwatch-$GITHUB_REF_NAME.spdx.json"
+          jq -e '.spdxVersion == "SPDX-2.3" and (.files | length) > 0' "dist/loopwatch-$GITHUB_REF_NAME.spdx.json" >/dev/null
+          (cd dist && sha256sum -- * > SHA256SUMS)
+      - name: attest build provenance (SLSA, verifiable with `gh attestation verify`)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.spdx.json
+      - name: publish GitHub release with tarball, SBOM and checksums
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # idempotent: no-op if the release was already created manually
-          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || \
-            gh release create "$GITHUB_REF_NAME" \
+          # idempotent: if the release was already created manually, just (re)upload the assets
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* \
               --title "loopwatch $GITHUB_REF_NAME" \
               --generate-notes
+          fi

@@ -16,6 +16,9 @@
 # Built-in secret patterns: [kind, regex, flags]
 builtin_rules_json() {
   jq -nc '[
+    ["anthropic",  "sk-ant-(?:api|admin)[0-9]{2}-[A-Za-z0-9_-]{20,}", ""],
+    ["openai",     "sk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{20,}", ""],
+    ["aws",        "(?i:aws_?secret_?access_?key)[\"'"'"']?\\s*[:=]\\s*[\"'"'"']?[A-Za-z0-9/+=]{40}", ""],
     ["key",        "sk-[A-Za-z0-9_-]{16,}", ""],
     ["stripe",     "(?:sk|rk|pk)_(?:live|test)_[A-Za-z0-9]{16,}", ""],
     ["github",     "gh[pousr]_[A-Za-z0-9]{20,}", ""],

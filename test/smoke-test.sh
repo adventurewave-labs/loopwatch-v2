@@ -13,7 +13,7 @@ LW_BASH="${LW_BASH:-$BASH}"
 echo "bash under test: $LW_BASH ($("$LW_BASH" -c 'echo $BASH_VERSION'))"
 
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/loopwatch-test.XXXXXX")"
-trap 'rm -rf "$TMP_ROOT"' EXIT
+[[ -n "${KEEP_TMP:-}" ]] || trap 'rm -rf "$TMP_ROOT"' EXIT
 fail() { echo "FAIL [$CASE]: $*" >&2; [[ -n "${LWLOG:-}" ]] && tail -30 "$LWLOG" >&2; exit 1; }
 ok()   { echo "  ok: $*"; }
 CASE=""
@@ -31,7 +31,7 @@ setup() {
   LW_STATE="$H/.local/state/loopwatch"
   CALLS="$W/claude-calls.log"; : > "$CALLS"
   export STUB_CALLS="$CALLS"
-  unset STUB_INPUTS STUB_SCHEMAS STUB_TRIAGE_COST STUB_PAGES STUB_TRIAGE STUB_FAIL STUB_HELP_FLAGS STUB_MARKER STUB_DIGEST STUB_HIGHLIGHT STUB_OVERLOAD STUB_MODEL_USED 2>/dev/null || true
+  unset STUB_INPUTS STUB_SCHEMAS STUB_TRIAGE_COST STUB_PAGES STUB_TRIAGE STUB_FAIL STUB_HELP_FLAGS STUB_MARKER STUB_DIGEST STUB_HIGHLIGHT STUB_OVERLOAD STUB_OVERLOAD_COST STUB_MODEL_USED 2>/dev/null || true
   export STUB_FAIL_STATE="$W/stub-fail-state"; mkdir -p "$STUB_FAIL_STATE"
   LWLOG=""
 
@@ -198,6 +198,26 @@ lw --dry-run
 grep -rq "ROTATED-MARKER" "$LW_STATE/run/bundle" || fail "content after truncation was ignored"
 grep -q "shrank" "$LWLOG" || fail "truncation not logged"
 ok "size < watermark resets to 0 and collects the new content"
+
+# ═════════════════════════════════════════════════════════════════════════
+setup "source replaced by a LARGER file is re-read from 0 (head fingerprint, backlog #24)"
+lw
+jq -e '.heads | length > 0' "$LW_STATE/watermarks.json" >/dev/null || fail "no head fingerprint stored"
+old_size="$(wc -c < "$TX" | tr -d ' ')"
+mv "$TX" "$TX.1"
+jq -nc '{type:"user",cwd:"/Users/dev/src/turbo-flow",message:{role:"user",content:"REPLACED-HEAD-MARKER first line of a new session file written after rotation, long enough to count as real activity for loopwatch."}}' > "$TX"
+while [[ "$(wc -c < "$TX" | tr -d ' ')" -le "$old_size" ]]; do
+  jq -nc '{type:"assistant",cwd:"/Users/dev/src/turbo-flow",message:{role:"assistant",content:[{type:"text",text:"filler line to grow the replacement past the old watermark offset"}]}}' >> "$TX"
+done
+lw --dry-run
+grep -rq "REPLACED-HEAD-MARKER" "$LW_STATE/run/bundle" || fail "first line of a larger replacement file was skipped"
+grep -q "source replaced" "$LWLOG" || fail "replacement not logged"
+# state from before fingerprints (no .heads) is still honoured: no re-read, no crash
+lw
+jq 'del(.heads)' "$LW_STATE/watermarks.json" > "$W/wm" && mv "$W/wm" "$LW_STATE/watermarks.json"
+lw --dry-run
+if grep -rq "REPLACED-HEAD-MARKER" "$LW_STATE/run/bundle" 2>/dev/null; then fail "legacy watermark without a fingerprint re-read the file"; fi
+ok "rotation past the old offset re-reads from 0; legacy state without .heads still trusted"
 
 # ═════════════════════════════════════════════════════════════════════════
 setup "first-run lookback skips old history"
@@ -637,7 +657,8 @@ setup "OpenTelemetry GenAI export: OTLP/JSON trace per run, file + collector, no
 mkdir -p "$W/bin"
 cat > "$W/bin/curl" <<'EOF2'
 #!/usr/bin/env bash
-printf '%s\n' "$@" > "$OTEL_CURL_ARGS"; cat > "$OTEL_CURL_BODY"
+sfx=""; case "${*: -1}" in */v1/logs) sfx=".logs" ;; esac   # one file set per OTLP signal
+printf '%s\n' "$@" > "$OTEL_CURL_ARGS$sfx"; cat > "$OTEL_CURL_BODY$sfx"
 prev=""; for a in "$@"; do
   if [[ "$prev" == "-H" && "$a" == @* ]]; then cat "${a#@}" > "$OTEL_CURL_HDRS"; stat -c %a "${a#@}" 2>/dev/null > "$OTEL_CURL_HDRS.mode" || stat -f %Lp "${a#@}" > "$OTEL_CURL_HDRS.mode"; fi
   prev="$a"; done
@@ -651,6 +672,7 @@ OTEL_EXPORTER_OTLP_ENDPOINT="http://ambient.test:4318" OTEL_EXPORT_DIR="$W/ambie
 conf "OTEL_EXPORT_DIR=\"$W/otel\""
 conf 'OTEL_EXPORTER_OTLP_ENDPOINT="http://collector.test:4318/"'
 conf 'OTEL_EXPORTER_OTLP_HEADERS="x-api-key=k123, authorization = Basic%20dXNlcjpzZWNyZXQ=,x-team=lw"'
+sleep 1   # run ids have 1 s resolution: keep this run's log file its own
 echo '{"type":"user","cwd":"/Users/dev/src/turbo-flow","message":{"role":"user","content":"OTEL-CONTENT-MARKER decided to shard the ingest queue by tenant because hot tenants starved the rest; tradeoff is more consumers."}}' >> "$TX"
 PATH="$W/bin:$PATH" lw --dry-run
 run_id="$(ledger_last | jq -r .run_id)"
@@ -681,7 +703,22 @@ grep -qx "x-team: lw" "$OTEL_CURL_HDRS" || fail "OTLP header 3 (last in the list
 [[ "$(cat "$OTEL_CURL_HDRS.mode")" == 600 ]] || fail "header file must be 0600"
 if ls "${TMPDIR:-/tmp}"/loopwatch-otel.* >/dev/null 2>&1; then fail "header file left behind"; fi
 cmp -s <(jq -c . "$F") <(jq -c . "$OTEL_CURL_BODY") || fail "collector got a different payload"
-ok "3 spans, gen_ai.* usage, file and collector agree, no content; ambient env ignored; headers via 0600 file (not argv), trimmed + percent-decoded"
+# structured logs (backlog #29): JSON lines with level, run_id and the run's trace id, also
+# exported as OTLP logs linked to the trace
+J="$LW_STATE/logs/$run_id.jsonl"
+[[ -s "$J" ]] || fail "no structured log for run $run_id"
+jq -se --arg r "$run_id" --arg tr "$(jq -r '.resourceSpans[0].scopeSpans[0].spans[0].traceId' "$F")" '
+  all(.[]; (.ts | test("Z$")) and (.t | type == "number") and (.level | IN("info","warn","error")) and .run_id == $r and .trace_id == $tr and (.msg | type == "string"))
+  and (map(.msg) | any(test("collecting deltas")))' "$J" >/dev/null || fail "structured log lines: $(head -2 "$J")"
+L="$W/otel/$run_id.otlp-logs.json"
+jq -e --arg tr "$(jq -r '.resourceSpans[0].scopeSpans[0].spans[0].traceId' "$F")" --arg sp "$(jq -r '.resourceSpans[0].scopeSpans[0].spans[0].spanId' "$F")" --argjson n "$(wc -l < "$J")" '
+  .resourceLogs[0].scopeLogs[0].logRecords as $r
+  | ($r | length) > 0 and ($r | length) <= $n and all($r[]; .traceId == $tr and .spanId == $sp and (.timeUnixNano | test("^[0-9]{19}$")) and .severityNumber >= 9)' "$L" >/dev/null \
+  || fail "OTLP logs: $(jq -c '.resourceLogs[0].scopeLogs[0].logRecords[0]' "$L" 2>&1)"
+grep -qx "http://collector.test:4318/v1/logs" "$OTEL_CURL_ARGS.logs" || fail "logs not POSTed to /v1/logs"
+cmp -s <(jq -c . "$L") <(jq -c . "$OTEL_CURL_BODY.logs") || fail "collector got different logs"
+if grep -q "OTEL-CONTENT-MARKER\|shard the ingest" "$J" "$L"; then fail "transcript content leaked into logs"; fi
+ok "3 spans, gen_ai.* usage, file and collector agree, no content; ambient env ignored; headers via 0600 file (not argv), trimmed + percent-decoded; JSON logs carry run_id + trace_id and export as OTLP logs on the same trace"
 
 rm -rf "$W/otel"
 echo '{"type":"user","cwd":"/Users/dev/src/turbo-flow","message":{"role":"user","content":"second delta so the run is not skipped: pinned the batch pool to spot with a PDB of 1 because evictions stalled ingest."}}' >> "$TX"
@@ -694,8 +731,137 @@ jq -e '.resourceSpans[0].scopeSpans[0].spans | .[0].status.code == 2 and .[1].st
        and (.[1].attributes | map(select(.key == "error.type")) | length == 1)' "$F" >/dev/null \
   || fail "a failed run must export error status: $(jq -c '.resourceSpans[0].scopeSpans[0].spans | map({name, status})' "$F")"
 grep -q "WARN: OTLP export to collector returned 503" "$LWLOG" || fail "collector failure should warn"
+jq -se 'any(.[]; .level == "error") and any(.[]; .level == "warn")' "$(ls -t "$LW_STATE"/logs/*.jsonl | head -1)" >/dev/null || fail "FATAL/WARN lines must log as error/warn"
 [[ "$(ledger_last | jq -r .status)" == failed ]] || fail "collector failure must not change the run outcome"
 ok "failed run exports error status; collector 503 only warns"
+
+# ═════════════════════════════════════════════════════════════════════════
+setup "related pages: BM25 picks topical catalog pages; static, escaped, re-validated (backlog #26)"
+seed_entry() {  # seed_entry <slug> <title> <summary> <tag>
+  mkdir -p "$SEED/site/pages/2025"
+  printf '<!doctype html><html><body><main><h1>%s</h1></main></body></html>\n' "$1" > "$SEED/site/pages/2025/$1.html"
+  jq --arg s "$1" --arg t "$2" --arg m "$3" --arg g "$4" '.entries += [{slug: $s, title: $t, category: "infra", tags: [$g], date: "2025-05-01",
+      path: ("pages/2025/" + $s + ".html"), summary: $m, source: "seed"}]' "$SEED/site/manifest.json" > "$W/m.json" && mv "$W/m.json" "$SEED/site/manifest.json"
+}
+seed_entry k8s-job-backoff "Kubernetes Job backoffLimit & CronJob retries" "How CronJob retries interact with backoffLimit for queue workers." k8s
+seed_entry sqs-visibility "Queue visibility timeout for idempotent workers" "Idempotent workers and the queue visibility timeout." queues
+seed_entry sourdough "Sourdough starter feeding schedule" "Hydration and feeding times for a rye starter." baking
+seed_entry evil-path "CronJob queue worker <script>" "CronJob queue idempotent workers k8s." k8s
+jq '(.entries[] | select(.slug == "evil-path") | .path) = "javascript:alert(1)"' "$SEED/site/manifest.json" > "$W/m.json" && mv "$W/m.json" "$SEED/site/manifest.json"
+git -C "$SEED" add -A && git -C "$SEED" commit -qm "seed entries" && git -C "$SEED" push -q "$BARE" HEAD:refs/heads/main
+lw
+PAGE="$SITE/pages/$YEAR/k8s-cronjob-queue-ingest.html"
+[[ -f "$PAGE" ]] || fail "page not published"
+grep -q '<nav><h2>Related</h2><ul>' "$PAGE" || fail "no related list: $(tail -5 "$PAGE")"
+nav="$(grep -o '<nav>.*</nav>' "$PAGE")"
+[[ "$nav" == *'href="../2025/k8s-job-backoff.html">Kubernetes Job backoffLimit &amp; CronJob retries</a>'* ]] || fail "topical page missing or unescaped: $nav"
+[[ "$nav" == *'2025/sqs-visibility.html'* ]] || fail "second topical page missing: $nav"
+[[ "$nav" != *sourdough* ]] || fail "unrelated page linked: $nav"
+[[ "$nav" != *javascript* && "$nav" != *evil-path* ]] || fail "unsafe catalog path linked: $nav"
+[[ "$(grep -c '<nav>' "$PAGE")" == 1 ]] || fail "related list must appear once"
+[[ -z "$(bash -c "source '$SRC_ROOT/lib/publish.sh'; html_problem '$PAGE'")" ]] || fail "page with related list fails the validator"
+jq -e '.related_links == 2' <(ledger_last) >/dev/null || fail "ledger: $(ledger_last | jq -c '{related_links}')"
+# RELATED_PAGES=0 turns it off
+setup "related pages: RELATED_PAGES=0 is off"
+conf 'RELATED_PAGES=0'
+lw
+if grep -q '<nav>' "$SITE/pages/$YEAR/k8s-cronjob-queue-ingest.html"; then fail "RELATED_PAGES=0 must add no list"; fi
+ok "2 topical pages linked (escaped title, ../2025/ href), baking page and unsafe path left out, page re-validated; 0 = off"
+
+# ═════════════════════════════════════════════════════════════════════════
+setup "LLM-as-judge eval: haiku, tool-free, budget-capped; low faithfulness fails (backlog #27)"
+CLAUDE_BIN="$SRC_ROOT/test/stubs/claude" "$LW_BASH" "$SRC_ROOT/test/eval/judge.sh" > "$W/judge.txt" 2>&1 || fail "judge on the golden: $(cat "$W/judge.txt")"
+grep -q "PASS — judge (within 0.75 of baseline" "$W/judge.txt" || fail "judge output: $(cat "$W/judge.txt")"
+grep "stage=judge" "$CALLS" | grep -q "model=haiku budget=0.10 tools=\[\]" || fail "judge call must be haiku, budget-capped, tool-free: $(grep stage=judge "$CALLS")"
+if STUB_JUDGE=low CLAUDE_BIN="$SRC_ROOT/test/stubs/claude" "$LW_BASH" "$SRC_ROOT/test/eval/judge.sh" > "$W/judge2.txt" 2>&1; then fail "faithfulness 2 must fail the judge"; fi
+grep -q "faithfulness 2 (< 4)" "$W/judge2.txt" || fail "judge failure reason: $(tail -2 "$W/judge2.txt")"
+ok "golden page judged within baseline; call is haiku/tool-free/budget-capped; faithfulness 2 fails with the claim listed"
+
+# ═════════════════════════════════════════════════════════════════════════
+setup "loopwatch doctor: healthy after a run; leaks, spend, anomalies and prompt drift surface (backlog #28)"
+lw
+doc() { bash "$SRC_ROOT/bin/loopwatch" doctor > "$W/doctor.txt" 2>&1; }
+doc || fail "healthy install must pass doctor: $(cat "$W/doctor.txt")"
+grep -q '^OK    last-run       published, 1 page(s), \$0\.[0-9]* · 0h ago' "$W/doctor.txt" || fail "last run line: $(grep last-run "$W/doctor.txt")"
+grep -q '^OK    canary ' "$W/doctor.txt" || fail "canary line: $(grep canary "$W/doctor.txt")"
+grep -q '^OK    ci-policy' "$W/doctor.txt" || fail "ci-policy line missing"
+chmod 644 "$H/.config/loopwatch/redact.list"
+L="$LW_STATE/runs.jsonl"
+jq -c '.cost_usd = 17.5 | .cost_anomaly = true | .prompt_version = "000000000000"' <(tail -n 1 "$L") >> "$L"
+doc || fail "warnings alone must not fail doctor: $(cat "$W/doctor.txt")"
+grep -q '^WARN  redact.list    mode 644' "$W/doctor.txt" || fail "redact.list mode not flagged"
+grep -q '^WARN  spend          \$17\.[0-9]* of \$20.00 this month (8[0-9]%)' "$W/doctor.txt" || fail "spend line: $(grep spend "$W/doctor.txt")"
+grep -q '^WARN  cost           1 cost anomaly' "$W/doctor.txt" || fail "anomaly line: $(grep cost "$W/doctor.txt")"
+grep -q '^WARN  prompts        changed since the last run (000000000000 ->' "$W/doctor.txt" || fail "drift line: $(grep prompts "$W/doctor.txt")"
+jq -c '.status = "skipped" | .skipped_reason = "no_activity" | .cost_usd = 0 | .cost_anomaly = false | del(.canary)' <(tail -n 1 "$L") >> "$L"
+doc || true
+grep -q '^OK    canary ' "$W/doctor.txt" || fail "a quiet-day row without a canary must not turn the canary line to WARN: $(grep canary "$W/doctor.txt")"
+jq -c '.status = "failed" | .skipped_reason = "canary_leak" | .cost_usd = 0' <(tail -n 1 "$L") >> "$L"
+if doc; then fail "a canary leak must fail doctor"; fi
+grep -q '^FAIL  last-run       failed 0h ago: canary_leak' "$W/doctor.txt" || fail "failed-run line: $(grep last-run "$W/doctor.txt")"
+grep -q '^FAIL  canary         1 privacy self-test failure' "$W/doctor.txt" || fail "canary FAIL line: $(grep canary "$W/doctor.txt")"
+tail -1 "$W/doctor.txt" | grep -q '^doctor: 2 fail, 4 warn$' || fail "summary: $(tail -1 "$W/doctor.txt")"
+ok "healthy run passes; redact.list mode, 88% of the monthly cap, anomaly, prompt drift warn; a canary leak fails (exit 1)"
+
+# ═════════════════════════════════════════════════════════════════════════
+setup "lock race: 6 runs started together, fresh and over a stale lock; never two inside the lock (backlog #31)"
+race() {  # race <n>: start n runs at once; wait for all
+  local i; : > "$W/race.pids"; : > "$W/holds"
+  for (( i = 0; i < $1; i++ )); do
+    ( STUB_SLEEP=2 STUB_HOLD_LOG="$W/holds" "$LW_BASH" "$SRC_ROOT/bin/loopwatch-run.sh" --dry-run 2> "$W/race-$i.log" ) & echo $! >> "$W/race.pids"
+  done
+  wait
+}
+# hold_peak <file>: most runs inside the lock at once, from "<ns> +1|-1 <pid>" lines; at equal
+# timestamps a release sorts before an acquire (1-second clocks must not fake an overlap)
+hold_peak() { sort -k1,1n -k2,2n "$1" | awk '{ c += $2; if (c > m) m = c } END { print m + 0 }'; }
+printf '%s\n' "1790000000000000000 +1 100" "1790000002000000000 -1 100" "1790000002000000000 +1 200" "1790000004000000000 -1 200" > "$W/ties"
+[[ "$(hold_peak "$W/ties")" == 1 ]] || fail "hold_peak counts back-to-back runs in the same second as overlapping"
+check_race() {  # check_race <label>: never two runs inside the lock; every run either worked or skipped as locked
+  local rows ran locked peak
+  rows="$(tail -n 6 "$LW_STATE/runs.jsonl")"
+  jq -e . <<< "$rows" >/dev/null || fail "$1: ledger rows corrupted: $rows"
+  ran="$(jq -s '[.[] | select(.status == "dry_run")] | length' <<< "$rows")"
+  locked="$(jq -s '[.[] | select(.skipped_reason == "locked")] | length' <<< "$rows")"
+  # the invariant: at most one run holds the lock at any instant (a late starter may run
+  # legitimately after the first finished, so "exactly one ran" would be timing-dependent)
+  peak="$(hold_peak "$W/holds")"
+  [[ "$peak" == 1 ]] || fail "$1: peak $peak runs inside the lock (want exactly 1): $(jq -c '{status, skipped_reason}' <<< "$rows" | tr '\n' ' ')"
+  [[ "$ran" -ge 1 && $(( ran + locked )) == 6 ]] || fail "$1: want 6 = runs + locked skips, got $ran + $locked: $(jq -c '{status, skipped_reason}' <<< "$rows" | tr '\n' ' ')"
+  RACE_RAN="$RACE_RAN$ran "
+  jq -e . "$LW_STATE/watermarks.json" >/dev/null || fail "$1: watermarks corrupted"
+  [[ ! -e "$LW_STATE/.lock" ]] || fail "$1: lock left behind"
+}
+RACE_RAN=""
+race 6; check_race "fresh start"
+# a stale lock (dead pid): every racer sees it stale at once, and only one may reclaim it
+mkdir -p "$LW_STATE/.lock"; echo 999999 > "$LW_STATE/.lock/pid"
+race 6; check_race "stale lock"
+[[ "$(cat "$W"/race-*.log | grep -c 'reclaiming stale lock')" == 1 ]] || fail "stale lock reclaimed $(cat "$W"/race-*.log | grep -c 'reclaiming stale lock') times"
+# a run must never release a lock it no longer owns (reclaimed by another run meanwhile)
+( STUB_SLEEP=3 STUB_HOLD_LOG="$W/holds" "$LW_BASH" "$SRC_ROOT/bin/loopwatch-run.sh" --dry-run 2> "$W/own.log" ) &
+for _ in 1 2 3 4 5 6 7 8 9 10; do [[ -f "$LW_STATE/.lock/pid" ]] && break; sleep 0.3; done
+echo $$ > "$LW_STATE/.lock/pid"      # someone else holds it now
+wait
+[[ "$(cat "$LW_STATE/.lock/pid" 2>/dev/null)" == "$$" ]] || fail "a finishing run removed a lock it did not own"
+ok "6 concurrent runs, fresh and over a dead-PID lock (reclaimed once): never 2 inside the lock (runs that worked: ${RACE_RAN% }, rest skipped as locked); ledger and watermarks valid; a run only releases its own lock"
+rm -rf "$LW_STATE/.lock"
+
+# ═════════════════════════════════════════════════════════════════════════
+setup "review fixes: logs are scrubbed before export; highlight splitter keeps version numbers"
+conf "OTEL_EXPORT_DIR=\"$W/otel\""
+STUB_PAGES=secretcode STUB_HIGHLIGHT="$(printf '2.1.283 CLI flag --no-session-persistence landed\n1. numbered item\n1.5x faster triage')" lw || true
+grep -q "grounding:" "$LWLOG" || fail "the grounding log line (the leak path) did not fire"
+if grep -rq "sk-ant-api03" "$LWLOG" "$LW_STATE/logs" "$W/otel" 2>/dev/null; then
+  fail "a secret from model output reached the logs/OTLP export: $(grep -rl 'sk-ant-api03' "$LWLOG" "$LW_STATE/logs" "$W/otel" | head -3)"
+fi
+grep -rq "REDACTED:anthropic" "$LW_STATE/logs" || fail "the scrubbed token should show as a redaction marker"
+D="$(ls "$SITE"/digests/*.html 2>/dev/null | head -1)"
+[[ -n "$D" ]] || D="$(ls "$LW_STATE"/run/*.html "$LW_STATE"/run/digest* 2>/dev/null | head -1)"
+jq -e '.highlights | index("2.1.283 CLI flag --no-session-persistence landed") and index("numbered item") and index("1.5x faster triage")' "$LW_STATE/run/triage-meta.json" >/dev/null 2>&1 \
+  || jq -e '.highlights | index("2.1.283 CLI flag --no-session-persistence landed") and index("numbered item") and index("1.5x faster triage")' "$(ls "$LW_STATE"/run/meta*.json | head -1)" >/dev/null \
+  || fail "highlights mangled: $(jq -c '.highlights' "$LW_STATE"/run/*meta*.json 2>/dev/null | head -2)"
+ok "a secret in unpublished model code never reaches the text log, JSON log or OTLP export; '2.1.283 …' and '1.5x …' keep their numbers, '1. ' numbering is stripped"
 
 # ═════════════════════════════════════════════════════════════════════════
 setup "near-duplicate guard: same topic under a new slug is dropped, new topic kept"
@@ -757,8 +923,12 @@ ok "missing isolation flag fails closed before any call"
 # ═════════════════════════════════════════════════════════════════════════
 setup "resilient calls: transient overload retried with backoff, then published"
 conf 'CLAUDE_RETRY_BASE_S=0'
-STUB_OVERLOAD="triage:2" lw
+STUB_OVERLOAD="triage:2" STUB_OVERLOAD_COST=0.01 lw
 [[ "$(grep -c 'stage=triage' "$CALLS")" == 3 ]] || fail "triage should run 3 times (2 overloads + success): $(grep -c 'stage=triage' "$CALLS")"
+# each retry's budget is the stage budget minus what the failed attempts already spent
+tb="$(grep 'stage=triage' "$CALLS" | grep -o 'budget=[^ ]*' | cut -d= -f2 | tr '\n' ' ')"
+jq -e -n --argjson a "[${tb// /,}0]" '($a[0] - $a[1]) >= 0.009 and ($a[1] - $a[2]) >= 0.009' >/dev/null \
+  || fail "retries must get the stage budget minus what was spent (\$0.01 per overload): $tb"
 grep -q "triage: transient failure on attempt 1/3" "$LWLOG" || fail "retry not logged"
 jq -e '.status == "published" and .pages == 1 and .attempts == 4 and .retries == 2 and .fallback_used == false' <(ledger_last) >/dev/null \
   || fail "ledger: $(ledger_last | jq -c '{status, pages, attempts, retries, fallback_used}')"
@@ -862,11 +1032,11 @@ errs="$(v triage.schema.json "$tri")"
 grep -q "start_line: below 1" <<< "$errs" && grep -q "end_line: expected integer" <<< "$errs" || fail "line bounds/integers: $errs"
 ok "jq JSON-Schema validator: valid page passes; 5 page violations and 2 evidence violations reported"
 # in the pipeline: an oversized highlight list is a top-level triage violation -> fail closed
-export STUB_HIGHLIGHT="$(printf 'h%.0s' $(seq 1 450))"
+export STUB_HIGHLIGHT="$(printf 'h%.0s' $(seq 1 2450))"
 if lw; then fail "triage violating its schema at top level must fail the run"; fi
 unset STUB_HIGHLIGHT
 jq -e '.skipped_reason == "triage_schema_violation"' <(ledger_last) >/dev/null || fail "ledger: $(ledger_last)"
-grep -q 'highlights\[1\]: longer than 400' "$LWLOG" || fail "reason not logged: $(grep FATAL "$LWLOG")"
+grep -q 'highlights: longer than 2400' "$LWLOG" || fail "reason not logged: $(grep FATAL "$LWLOG")"
 ok "top-level triage violation fails closed (triage_schema_violation)"
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -914,6 +1084,51 @@ grep -qiE "$pat" "$W/raw.html" || fail "catalog CI must reject a raw handler"
 ok "workflows pinned + least-privilege; 6 risky patterns caught; catalog markup scan tells escaped text from a raw handler"
 
 # ═════════════════════════════════════════════════════════════════════════
+setup "release provenance: attested release + valid, reproducible SPDX SBOM (backlog #30)"
+# R6/R7: a release workflow that grants id-token at the top and ships without SBOM/attestation
+cat > "$W/rel.yml" <<'EOF2'
+name: rel
+on: { push: { tags: ["v*"] } }
+permissions:
+  contents: write
+  id-token: write
+jobs:
+  r:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: gh release create "$GITHUB_REF_NAME" --generate-notes
+EOF2
+if bash "$SRC_ROOT/test/ci-policy.sh" "$W/rel.yml" > "$W/rel.txt" 2>&1; then fail "unattested release passed the policy"; fi
+# flow-style top-level grant, and an SBOM mentioned only in a comment, are caught too
+sed -e 's/^permissions:$/permissions: { contents: read, id-token: write }/' -e '/^  contents: write$/d' -e '/^  id-token: write$/d' "$W/rel.yml" > "$W/rel2.yml"
+printf '      # TODO: add an sbom step\n      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2\n' >> "$W/rel2.yml"
+if bash "$SRC_ROOT/test/ci-policy.sh" "$W/rel2.yml" > "$W/rel2.txt" 2>&1; then fail "flow-style id-token / comment-only SBOM passed: $(cat "$W/rel2.txt")"; fi
+grep -q "R6 id-token: write granted at the top level" "$W/rel2.txt" || fail "flow-style top-level id-token missed: $(cat "$W/rel2.txt")"
+grep -q "R7 release without an SBOM" "$W/rel2.txt" || fail "a comment satisfied the SBOM rule: $(cat "$W/rel2.txt")"
+for r in "R6 id-token: write granted at the top level" "R7 release without build-provenance attestation" "R7 release without an SBOM"; do
+  grep -q "$r" "$W/rel.txt" || fail "policy missed: $r ($(cat "$W/rel.txt"))"
+done
+grep -q 'actions/attest-build-provenance@[0-9a-f]\{40\} # v' "$SRC_ROOT/.github/workflows/release.yml" || fail "release must attest with a pinned action"
+# the SBOM: every shipped file with matching hashes, runtime deps, build actions, reproducible
+SOURCE_DATE_EPOCH=1790000000 bash "$SRC_ROOT/bin/loopwatch-sbom.sh" "$SRC_ROOT" > "$W/sbom.json" || fail "sbom generation failed"
+SOURCE_DATE_EPOCH=1790000000 bash "$SRC_ROOT/bin/loopwatch-sbom.sh" "$SRC_ROOT" | cmp -s - "$W/sbom.json" || fail "SBOM must be reproducible under SOURCE_DATE_EPOCH"
+n_git="$(git -C "$SRC_ROOT" ls-files 2>/dev/null | while IFS= read -r f; do [[ -f "$SRC_ROOT/$f" ]] && echo; done | wc -l | tr -d ' ')"
+jq -e --arg v "$(cat "$SRC_ROOT/VERSION")" --argjson n "${n_git:-0}" '
+  .spdxVersion == "SPDX-2.3" and .creationInfo.created == "2026-09-21T14:13:20Z"
+  and (.packages[0] | .name == "loopwatch" and .versionInfo == $v and .licenseDeclared == "MIT"
+       and (.packageVerificationCode.packageVerificationCodeValue | test("^[0-9a-f]{40}$")))
+  and ($n == 0 or (.files | length) == $n)
+  and ([.relationships[] | select(.relationshipType == "DEPENDS_ON")] | length == 5)
+  and ([.relationships[] | select(.relationshipType == "BUILD_TOOL_OF")] | length >= 2)
+  and ([.packages[] | select(.name == "actions/attest-build-provenance")] | length == 1)' "$W/sbom.json" >/dev/null \
+  || fail "SBOM content: $(jq -c '{files: (.files | length), pk: [.packages[].name]}' "$W/sbom.json")"
+f1="$(jq -r '.files[] | select(.fileName == "./lib/redact.sh") | .checksums[] | select(.algorithm == "SHA256") | .checksumValue' "$W/sbom.json")"
+[[ "$f1" == "$( (sha256sum "$SRC_ROOT/lib/redact.sh" 2>/dev/null || shasum -a 256 "$SRC_ROOT/lib/redact.sh") | cut -c1-64)" ]] || fail "SBOM hash for lib/redact.sh is wrong"
+if command -v pyspdxtools >/dev/null 2>&1; then pyspdxtools -i "$W/sbom.json" > "$W/spdx.txt" 2>&1 || fail "SPDX validator: $(head -3 "$W/spdx.txt")"; fi
+ok "top-level id-token, unattested and SBOM-less releases fail the policy; SBOM is SPDX-2.3, reproducible, hashes match, 5 runtime deps + pinned build actions"
+
+# ═════════════════════════════════════════════════════════════════════════
 setup "cost guardrails: monthly cap fails closed, clamps the run budget; anomalies flagged"
 mkdir -p "$LW_STATE"
 M="$(date +%Y-%m)"
@@ -926,7 +1141,7 @@ jq -e '.status == "skipped" and .skipped_reason == "monthly_budget_exhausted"' <
 jq -e '.files | length == 0' "$LW_STATE/watermarks.json" >/dev/null 2>&1 || [[ ! -f "$LW_STATE/watermarks.json" ]] || fail "activity must stay queued (watermarks held)"
 ok "month spent (\$19.97 of \$20; an old month's \$500 ignored): skipped with 0 calls, watermarks held"
 # 19.50 spent -> this run's budget is clamped to the $0.50 left
-{ row "${M}-01T03:30:00-0600" 19.50; } > "$LW_STATE/runs.jsonl"
+{ row "${M}-01T03:30:00-0600" 19.50; row "2020-01-01T03:30:00-0600" 500; } > "$LW_STATE/runs.jsonl"
 lw
 grep -q 'monthly budget: \$0.5 left of \$20 — this run.s budget clamped from \$1.00' "$LWLOG" || fail "clamp not logged: $(grep monthly "$LWLOG")"
 grep "stage=extract" "$CALLS" | grep -q "budget=0.4[0-9]* " || fail "writer budget must come out of the clamped \$0.50: $(grep stage=extract "$CALLS" | grep -o 'budget=[^ ]*')"
@@ -987,7 +1202,10 @@ mkdir -p "$W/src"; cp -R "$SRC_ROOT/bin" "$SRC_ROOT/lib" "$SRC_ROOT/prompts" "$S
 sed -i.bak -e '/\["key",/d' -e '/\["github",/d' "$W/src/lib/redact.sh"
 printf '%s\n' "$(jq -nc '{type:"user",cwd:"/Users/dev/src/turbo-flow",message:{role:"user",content:"Moved the ingest workers onto a dedicated node pool with taints so noisy batch jobs cannot starve the API pods; tolerations live in the worker chart and the pool autoscales from zero."}}')" >> "$TX"
 if "$LW_BASH" "$W/src/bin/loopwatch-run.sh" --dry-run 2> "$W/b.log"; then fail "canary masked by redact.list terms"; fi
-grep -q "a canary secret survived scrubbing" "$W/b.log" || fail "reason: $(grep FATAL "$W/b.log")"
+# (log lines are scrubbed with redact.list too, so these terms mangle the log text; the
+# ledger reason is the stable signal)
+jq -e '.skipped_reason == "canary_leak"' <(ledger_last) >/dev/null || fail "reason: $(ledger_last | jq -c .skipped_reason) $(grep FATAL "$W/b.log")"
+grep -q "secret survived scrubbing" "$W/b.log" || fail "log reason: $(grep FATAL "$W/b.log")"
 : > "$H/.config/loopwatch/redact.list"
 # (3) cost guard fails closed: corrupt ledger line, bad cap value
 M="$(date +%Y-%m)"
@@ -1017,6 +1235,48 @@ printf 'name: x\non: push\npermissions:\n  contents: read\njobs:\n  a:\n    runs
 if bash "$SRC_ROOT/test/ci-policy.sh" "$W/c.yml" >/dev/null; then fail "commented persist-credentials accepted"; fi
 if bash "$SRC_ROOT/test/ci-policy.sh" "$W/none.yml" >/dev/null; then fail "no workflow files must fail"; fi
 ok "zero-padded entities + stray quote blocked; canary immune to redact.list; cost guard fails closed; email rule linear; <pre> grounded; hangup not retried; ci-policy tightened"
+
+# ═════════════════════════════════════════════════════════════════════════
+setup "triage highlights as one newline-separated string (fewer structured-output retries)"
+jq -e '.properties.highlights.type == "string"' "$SRC_ROOT/schemas/triage.schema.json" >/dev/null || fail "schema: highlights must be a string"
+printf '%s' '{"structured_output":{"digest_summary":"d","highlights":"- first item\n2) second item\n\n* third  \n","candidates":[]}}' > "$W/triage.json"
+got="$(bash -c "RUN_DIR='$W'; source '$SRC_ROOT/lib/extract.sh'; parse_triage" | jq -c .highlights)"
+[[ "$got" == '["first item","second item","third"]' ]] || fail "highlights parsing: $got"
+lw --dry-run
+grep -q "ingest architecture decided" "$LW_STATE/run/run-meta.json" || fail "highlights lost in run-meta"
+ok "string highlights split into items (bullets/numbering stripped); run-meta keeps them"
+
+# ═════════════════════════════════════════════════════════════════════════
+setup "triage recheck drops by position: an invalid candidate reusing a valid id does not take it down"
+STUB_TRIAGE=dupid lw --dry-run
+grep -q "triage: dropped candidate(s) at index \[1\]" "$LWLOG" || fail "invalid candidate not dropped: $(grep triage: "$LWLOG")"
+grep -q "stage=extract" "$CALLS" || fail "the valid candidate c1 must survive and reach the writer"
+jq -e '.candidates | length == 1 and .[0].title == "Turbo-Flow ingest: CronJob + work queue"' "$LW_STATE/run/candidates.json" >/dev/null \
+  || fail "candidates: $(jq -c '[.candidates[].title]' "$LW_STATE/run/candidates.json")"
+ok "invalid duplicate at index 1 dropped; the valid c1 kept and written"
+
+# ═════════════════════════════════════════════════════════════════════════
+setup "data retention: old logs, autopsies and private page copies are pruned; ledger kept"
+S="$LW_STATE"; mkdir -p "$S/logs" "$S/failed/2020-01-01_0300/bundle" "$S/private/near-dups/2020-01-01_0300" "$S/private/ungrounded/2020-01-01_0300" "$S/failed/fresh"
+echo old > "$S/logs/2020-01-01_0300.log"; echo scrubbed > "$S/failed/2020-01-01_0300/bundle/x.txt"; echo p > "$S/private/near-dups/2020-01-01_0300/p.html"
+echo p > "$S/private/ungrounded/2020-01-01_0300/p.html"; echo recent > "$S/failed/fresh/keep.txt"
+echo '{"ts":"2020-01-01T03:30:00-0600","status":"published","cost_usd":0.1}' > "$S/runs.jsonl"
+touch -t 202001010300 "$S/logs/2020-01-01_0300.log" "$S/failed/2020-01-01_0300" "$S/private/near-dups/2020-01-01_0300" "$S/private/ungrounded/2020-01-01_0300"
+lw --dry-run
+for gone in logs/2020-01-01_0300.log failed/2020-01-01_0300 private/near-dups/2020-01-01_0300 private/ungrounded/2020-01-01_0300; do
+  [[ ! -e "$S/$gone" ]] || fail "not pruned: $gone"
+done
+[[ -f "$S/failed/fresh/keep.txt" ]] || fail "recent autopsy must be kept"
+grep -q '2020-01-01T03:30' "$S/runs.jsonl" || fail "the ledger must never be pruned"
+jq -e '.pruned == 4' <(ledger_last) >/dev/null || fail "ledger pruned: $(ledger_last | jq .pruned)"
+grep -q "retention: pruned 4 entries older than 30 days" "$LWLOG" || fail "prune not logged"
+# RETENTION_DAYS=0 keeps everything; a bad value fails closed
+mkdir -p "$S/private/near-dups/old2"; touch -t 202001010300 "$S/private/near-dups/old2"
+conf 'RETENTION_DAYS=0'; lw --dry-run
+[[ -d "$S/private/near-dups/old2" ]] || fail "RETENTION_DAYS=0 must keep everything"
+conf "RETENTION_DAYS='30d'"
+if lw --dry-run; then fail "a non-numeric RETENTION_DAYS must fail closed"; fi
+ok "4 old entries pruned (logs, autopsy with scrubbed bundle, near-dup + ungrounded copies); recent autopsy and ledger kept; 0 = keep; bad value fails closed"
 
 echo
 echo "PASS — $N_CASES cases green"

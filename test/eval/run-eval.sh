@@ -12,6 +12,9 @@
 #                                    Use it before merging prompt or schema changes.
 #   test/eval/run-eval.sh --record   LIVE run that then REPLACES the golden (recorded outputs,
 #                                    bundle and PROMPT_VERSION). Use after a --live run you accept.
+#   test/eval/judge.sh               LIVE page-QUALITY eval (opt-in, Haiku, ~$0.04 per page): rubric
+#                                    scores against judge-baseline.json; --calibrate proves the judge
+#                                    catches planted claims.
 #
 # Provenance: recorded/PROMPT_VERSION is the prompt_version (hash of prompts + schemas) the
 # golden was recorded under. Offline mode fails when they drift, so a prompt edit can't pass CI
@@ -111,7 +114,16 @@ else
   printf '  live: %s page(s), $%s, %ss   |   golden: %s page(s), $%s\n' "$pages" "$cost" "$secs" "$GOLD_PAGES" "$GOLD_COST"
   jq -r '.pages[] | "    - [\(.category)] \(.title)"' "$RUN/run-meta.json"
   [[ "$pages" -ge 1 ]] || fail "quality collapse: 0 pages on a day that produced $GOLD_PAGES"
-  jq -e --argjson c "$GOLD_COST" '.cost_usd <= 2 * $c' <<< "$L" >/dev/null || fail "cost regression: \$$cost > 2x golden \$$GOLD_COST"
+  # cost gate normalised for how much work the day produced: triage cost (same input every
+  # time) and writer cost PER PAGE must each stay within 2x the golden. A raw total would
+  # flag a 3-page day against a 1-page golden as a "regression".
+  GT="$(jq '.total_cost_usd' "$FIX/recorded/triage.json")"
+  GW="$(jq --argjson p "$GOLD_PAGES" '.total_cost_usd / ([$p, 1] | max)' "$FIX/recorded/extract.json")"
+  LT="$(jq '[.stages[] | select(.stage == "triage") | .cost_usd] | add // 0' <<< "$L")"
+  LW="$(jq '([.stages[] | select(.stage == "extract") | .cost_usd] | add // 0) / ([.pages, 1] | max)' <<< "$L")"
+  printf '  triage $%.4f (golden $%.4f) · writer $%.4f/page (golden $%.4f/page)\n' "$LT" "$GT" "$LW" "$GW"
+  jq -e -n --argjson l "$LT" --argjson g "$GT" '$l <= 2 * $g' >/dev/null || fail "triage cost regression: \$$LT > 2x golden \$$GT"
+  jq -e -n --argjson l "$LW" --argjson g "$GW" '$l <= 2 * $g' >/dev/null || fail "writer cost-per-page regression: \$$LW > 2x golden \$$GW"
   jq -e '.validator_drops == 0 and .postscan_drops == 0' <<< "$L" >/dev/null || echo "  WARN: live run had drops: $(jq -c '{validator_drops, postscan_drops}' <<< "$L")"
   if [[ "$MODE" == "--record" ]]; then
     for st in triage extract; do

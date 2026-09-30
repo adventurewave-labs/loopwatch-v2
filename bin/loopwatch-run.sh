@@ -49,8 +49,11 @@ source "$CONF"
 : "${EXPORT_MD_DIR:=}"
 : "${EXPORT_DIGEST_TO:=}"
 : "${NEAR_DUP_THRESHOLD:=0.55}"
+: "${RELATED_PAGES:=3}"
+: "${RELATED_MIN_SCORE:=1.5}"
 : "${MONTHLY_BUDGET_USD:=20.00}"         # calendar-month cap across runs (0 = off); fails closed, activity stays queued
 : "${COST_ANOMALY_FACTOR:=3}"           # flag a run costing >= this x the rolling median
+: "${RETENTION_DAYS:=30}"              # prune logs/autopsies/private page copies older than this (0 = keep)
 : "${GROUNDING:=on}"                   # code-token groundedness guard (on|off)
 : "${GROUNDING_DROP_MIN:=4}"           # drop a page with >= this many unsupported code tokens (and >= half)
 : "${OTEL_EXPORT_DIR:=}"
@@ -92,11 +95,14 @@ RUN_DIR="$STATE_DIR/run"
 LEDGER="${LEDGER:-$STATE_DIR/runs.jsonl}"
 mkdir -p "$STATE_DIR/logs" "$STATE_DIR/failed"
 LOG="$STATE_DIR/logs/$RUN_TS.log"
+LOG_JSONL="$STATE_DIR/logs/$RUN_TS.jsonl"
 
 # shellcheck disable=SC1091
 source "$ROOT_DIR/lib/common.sh"
 # shellcheck disable=SC1091
 source "$ROOT_DIR/lib/otel.sh"
+# one trace per run: OTel spans and every structured log line (LOG_JSONL) carry these ids
+RUN_TRACE_ID="$(otel_hex 16)"; RUN_ROOT_SPAN="$(otel_hex 8)"
 PROMPT_VERSION="$(prompt_version "$ROOT_DIR")"
 
 # dependency preflight
@@ -151,16 +157,40 @@ USAGE_FILE=/dev/null
 LEDGER_DONE=false
 take_lock() {
   if mkdir "$LOCK" 2>/dev/null; then echo "$$" > "$LOCK/pid"; return 0; fi
-  local pid age
-  pid="$(cat "$LOCK/pid" 2>/dev/null || true)"
-  age=$(( $(now_epoch) - $(file_mtime "$LOCK") ))
-  if { [[ -n "$pid" ]] && ! kill -0 "$pid" 2>/dev/null; } || [[ "$age" -gt $(( LOCK_STALE_HOURS * 3600 )) ]] \
-     || { [[ -z "$pid" ]] && [[ "$age" -gt 60 ]]; }; then
-    log "reclaiming stale lock (pid ${pid:-none}, ${age}s old)"
-    rm -rf "$LOCK"
-    if mkdir "$LOCK" 2>/dev/null; then echo "$$" > "$LOCK/pid"; return 0; fi
+  lock_stale || return 1
+  # Reclaiming is itself a race: several runs can see the same stale lock at once, and a
+  # plain "rm -rf; mkdir" lets a late one delete the lock an early one just re-took (found
+  # by the lock-race test: 4 of 6 racers ran). So only the holder of a second mkdir lock
+  # may reclaim, and it re-checks staleness first. A reclaim lock older than 60s is from a
+  # run that died mid-reclaim and is cleared.
+  local r="$LOCK.reclaim"
+  if ! mkdir "$r" 2>/dev/null; then
+    [[ $(( $(now_epoch) - $(file_mtime "$r" 2>/dev/null || now_epoch) )) -gt 60 ]] && rm -rf "$r"
+    return 1
   fi
+  if lock_stale; then
+    log "reclaiming stale lock (pid ${LOCK_STALE_PID:-none}, ${LOCK_STALE_AGE}s old)"
+    rm -rf "$LOCK"
+    if mkdir "$LOCK" 2>/dev/null; then echo "$$" > "$LOCK/pid"; rmdir "$r" 2>/dev/null || true; return 0; fi
+  fi
+  rmdir "$r" 2>/dev/null || true
   return 1
+}
+# lock_stale: 0 if the lock's holder is gone (dead PID), it is older than LOCK_STALE_HOURS, or
+# it has had no PID for over 60s (a run that died between mkdir and writing its PID)
+lock_stale() {
+  [[ -d "$LOCK" ]] || return 1
+  LOCK_STALE_PID="$(cat "$LOCK/pid" 2>/dev/null || true)"
+  LOCK_STALE_AGE=$(( $(now_epoch) - $(file_mtime "$LOCK" 2>/dev/null || now_epoch) ))
+  { [[ -n "$LOCK_STALE_PID" ]] && ! kill -0 "$LOCK_STALE_PID" 2>/dev/null; } \
+    || [[ "$LOCK_STALE_AGE" -gt $(( LOCK_STALE_HOURS * 3600 )) ]] \
+    || { [[ -z "$LOCK_STALE_PID" ]] && [[ "$LOCK_STALE_AGE" -gt 60 ]]; }
+}
+# release_lock: only the run whose PID is in the lock removes it; a run whose lock was
+# reclaimed after LOCK_STALE_HOURS must not delete the new holder's lock on its way out
+release_lock() {
+  [[ "$(cat "$LOCK/pid" 2>/dev/null || true)" == "$$" ]] || return 0
+  rm -rf "$LOCK" 2>/dev/null || true
 }
 if ! take_lock; then
   log "lock held by a live run ($LOCK) — exiting"
@@ -178,10 +208,11 @@ on_exit() {
     autopsy
     finish failed "${DIE_REASON:-error}" 0
   fi
-  rm -rf "$LOCK" 2>/dev/null || true
+  release_lock
 }
 trap 'on_exit $?' EXIT
 
+retention_prune
 rm -rf "$RUN_DIR"
 mkdir -p "$RUN_DIR/bundle/transcripts" "$RUN_DIR/bundle/git" "$RUN_DIR/pages"
 : > "$RUN_DIR/usage.jsonl"
@@ -192,6 +223,7 @@ TRIMMED_BYTES=0
 POSTSCAN_DROPS=0
 VALIDATOR_DROPS=0
 NEAR_DUP_DROPS=0
+RELATED_LINKS=0
 GROUNDING_DROPS=0
 UNGROUNDED_TOKENS=0
 STAGE_B_SKIP=""

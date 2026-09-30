@@ -77,9 +77,22 @@ project_allowed() {
   return 0
 }
 
+# A byte offset alone can't tell "grew" from "replaced": a file truncated or rotated and then
+# rewritten past the old offset looks like growth, and everything before the offset would be
+# skipped for good (found by the watermark property test, test/prop/watermarks.sh). So each
+# offset carries a head fingerprint, "<n>:<hash of the first n bytes>" with n = min(offset,
+# WM_HEAD_BYTES), in .heads; a mismatch means the file was replaced and is re-read from 0.
+# State written before fingerprints existed has no .heads entry and is trusted as before.
+WM_HEAD_BYTES=1024
 wm_get() { jq -r --arg k "$1" '.files[$k] // empty' "$WATERMARKS"; }
-wm_set() {
-  jq --arg k "$1" --argjson v "$2" '.files[$k] = $v' \
+wm_head_get() { jq -r --arg k "$1" '(.heads // {})[$k] // empty' "$WATERMARKS"; }
+wm_head_of() {  # wm_head_of <file> <offset> -> "<n>:<hash>"
+  local n="$2"
+  [[ "$n" -le "$WM_HEAD_BYTES" ]] || n="$WM_HEAD_BYTES"
+  printf '%s:%s' "$n" "$(head -c "$n" "$1" | hash_stream | cut -c1-16)"
+}
+wm_set() {  # wm_set <key> <offset> <file>
+  jq --arg k "$1" --argjson v "$2" --arg h "$(wm_head_of "$3" "$2")" '.files[$k] = $v | .heads[$k] = $h' \
     "$RUN_DIR/new-watermarks.json" > "$RUN_DIR/nw.tmp" \
     && mv "$RUN_DIR/nw.tmp" "$RUN_DIR/new-watermarks.json"
 }
@@ -96,7 +109,7 @@ decide_source() {
 # collect_globs <label> <glob>...
 collect_globs() {
   local label="$1"; shift
-  local pat f key size old chunk len partial consumed out n=0 cwd proj sess now decision
+  local pat f key size old chunk len partial consumed out n=0 cwd proj sess now decision head_fp
   now="$(now_epoch)"
   for pat in "$@"; do
     while IFS= read -r f; do
@@ -111,7 +124,7 @@ collect_globs() {
         # first sighting: only files touched within FIRST_RUN_LOOKBACK_HOURS are mined
         # from the start; older history is watermarked at its current size and skipped.
         if [[ $(( now - $(file_mtime "$f") )) -gt $(( FIRST_RUN_LOOKBACK_HOURS * 3600 )) ]]; then
-          wm_set "$key" "$size"
+          wm_set "$key" "$size" "$f"
           continue
         fi
         old=0
@@ -119,6 +132,12 @@ collect_globs() {
       if [[ "$size" -lt "$old" ]]; then
         log "source shrank (truncated/rotated) — re-reading from 0: $label:$key"   # bug 4
         old=0
+      elif [[ "$old" -gt 0 ]]; then
+        head_fp="$(wm_head_get "$key")"
+        if [[ -n "$head_fp" && "$(wm_head_of "$f" "${head_fp%%:*}")" != "$head_fp" ]]; then
+          log "source replaced (rotated/rewritten past its old offset) — re-reading from 0: $label:$key"
+          old=0
+        fi
       fi
       [[ "$size" -gt "$old" ]] || continue
 
@@ -155,7 +174,7 @@ collect_globs() {
       else
         printf '%s\t%s\n' "$(file_mtime "$f")" "bundle/transcripts/${label}-${n}.txt" >> "$RUN_DIR/bundle-index.tsv"
       fi
-      wm_set "$key" "$((old + consumed))"
+      wm_set "$key" "$((old + consumed))" "$f"
     done < <(compgen -G "$pat" | LC_ALL=C sort || true)
   done
 }

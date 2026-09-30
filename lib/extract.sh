@@ -180,9 +180,11 @@ parse_triage() {
     (.structured_output // ((.result // "") | capture("(?s)(?<j>\\{.*\\})").j | fromjson))
     | select(type == "object"
              and (.digest_summary | type == "string")
-             and ((.highlights // []) | type == "array")
+             and ((.highlights // []) | type == "array" or type == "string")
              and (.candidates | type == "array"))
-    | .highlights = ((.highlights // []) | map(select(type == "string")) | .[:8])
+    | .highlights = ((.highlights // [])
+        | if type == "string" then split("\n") | map(sub("^\\s*(?:[-*•]|[0-9]+[.)])(?:\\s+|$)"; "") | sub("\\s+$"; "")) else . end
+        | map(select(type == "string" and length > 0)) | .[:8])
     | .candidates = (.candidates
         | map(select(type == "object" and (.id | type == "string") and (.id | test("^[a-z0-9-]{1,24}$"))
                      and (.title | type == "string") and ((.evidence // []) | type == "array")))
@@ -254,11 +256,14 @@ schema_recheck_triage() {
   fi
   bad="$(sed -n 's/^\$\.candidates\[\([0-9]*\)\].*/\1/p' <<< "$errs" | sort -un | tr '\n' ',' | sed 's/,$//')"
   log "triage: dropped candidate(s) at index [$bad] that violate the schema: $(head -2 <<< "$errs" | tr '\n' ';')"
-  jq --slurpfile raw "$RUN_DIR/triage.json" --argjson bad "[$bad]" '
-    ($raw[0].structured_output.candidates // []) as $rc
-    | ([$bad[] | $rc[.].id? // empty]) as $ids
-    | .candidates |= map(select(.id as $i | $ids | index($i) | not))' "$RUN_DIR/candidates.json" > "$RUN_DIR/c.tmp" \
-    && mv "$RUN_DIR/c.tmp" "$RUN_DIR/candidates.json"
+  # drop BY POSITION in the raw answer, then re-parse: dropping by id could remove a valid
+  # candidate that shares its id with an invalid one (parse_triage keeps the first per id)
+  cp "$RUN_DIR/triage.json" "$RUN_DIR/triage.raw.json"
+  jq --argjson bad "[$bad]" '
+    .structured_output.candidates |= (to_entries | map(select(.key as $k | $bad | index($k) | not)) | map(.value))' \
+    "$RUN_DIR/triage.raw.json" > "$RUN_DIR/triage.json"
+  parse_triage > "$RUN_DIR/candidates.json" \
+    || { DIE_REASON=triage_parse_error; die "triage output unparseable after dropping invalid candidates"; }
 }
 
 # schema_recheck_pages: every writer page is re-validated against the page item schema;
