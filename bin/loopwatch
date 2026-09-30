@@ -6,6 +6,8 @@
 #   loopwatch sources                 what would be collected, and why each source is in/out
 #   loopwatch preflight               privacy/visibility checks (non-zero exit on FAIL)
 #   loopwatch ledger [N]              last N runs from the ledger + totals (default 10)
+#   loopwatch doctor                  health at a glance: last run, canary, spend, anomalies,
+#                                     prompt drift, CI policy, dependencies (exit 1 on FAIL)
 #   loopwatch discover [--show-names] read-only Phase 0 report for this machine
 #   loopwatch setup                   create ~/.config/loopwatch/{loopwatch.conf,redact.list}, link ~/.local/bin/loopwatch
 #   loopwatch schedule install [HH MM] | remove | print
@@ -25,7 +27,7 @@ STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}/loopwatch"
 LABEL="com.adventurewave.loopwatch"
 PLIST_DEST="$HOME/Library/LaunchAgents/$LABEL.plist"
 
-usage() { sed -n '3,15s/^# \{0,1\}//p' "$SELF"; }
+usage() { sed -n '3,17s/^# \{0,1\}//p' "$SELF"; }
 
 cmd_setup() {
   mkdir -p "$CONFIG_HOME" "$STATE_HOME" "$HOME/.local/bin"
@@ -105,16 +107,113 @@ cmd_ledger() {
           pages: (map(.pages) | add), cost_usd: (map(.cost_usd) | add * 10000 | round / 10000),
           median_cost_usd: (map(select(.model != null) | .cost_usd) | sort | if length == 0 then 0 else .[length / 2 | floor] end)}' "$ledger" \
     | jq -r '"all-time: \(.runs) runs, \(.model_calls_runs) with model calls, \(.pages) pages, $\(.cost_usd) total, median $\(.median_cost_usd)/run with calls"'
+  jq -rs --arg m "$(date +%Y-%m)" --arg cap "${MONTHLY_BUDGET_USD:-}" '
+    (map(select((.ts // "") | startswith($m)) | (.cost_usd // 0)) | add // 0) as $s
+    | "this month (\($m)): $\($s * 10000 | round / 10000)" + (if $cap == "" then "" else " of $\($cap) cap" end)
+      + "; cost anomalies: \(map(select(.cost_anomaly == true)) | length)"' "$ledger"
+}
+
+# doctor: one screen of operational health. Each line is OK, WARN or FAIL; exit 1 on any FAIL.
+# Reads only the ledger, the config and the tool clone (no network, no model call).
+cmd_doctor() {
+  local conf="${LOOPWATCH_CONF:-$CONFIG_HOME/loopwatch.conf}" ledger="${LEDGER:-$STATE_HOME/runs.jsonl}"
+  local fails=0 warns=0 cap="" bin="claude" last age now pv_now pv_run gold
+  say() {
+    case "$1" in FAIL) fails=$((fails + 1)) ;; WARN) warns=$((warns + 1)) ;; esac
+    printf '%-4s  %-14s %s\n' "$1" "$2" "$3"
+  }
+  if [[ -f "$conf" ]]; then
+    # the config is the user's own bash file (loopwatch-run.sh sources it the same way)
+    cap="$(set +u; # shellcheck disable=SC1090
+           source "$conf" >/dev/null 2>&1; printf '%s' "${MONTHLY_BUDGET_USD:-20.00}")"
+    bin="$(set +u; # shellcheck disable=SC1090
+           source "$conf" >/dev/null 2>&1; printf '%s' "${CLAUDE_BIN:-claude}")"
+    say OK config "$conf"
+  else
+    say FAIL config "no $conf (run: loopwatch setup)"; cap="20.00"
+  fi
+  local rl="$CONFIG_HOME/redact.list" mode
+  if [[ -f "$rl" ]]; then
+    mode="$(stat -c %a "$rl" 2>/dev/null || stat -f %Lp "$rl" 2>/dev/null || echo '?')"
+    if [[ "$mode" == 600 ]]; then say OK redact.list "mode 600"; else say WARN redact.list "mode $mode (want 600: it names clients)"; fi
+  else
+    say WARN redact.list "missing (client names will not be redacted)"
+  fi
+  local d; for d in jq git; do command -v "$d" >/dev/null 2>&1 || say FAIL deps "$d not found"; done
+  if command -v "$bin" >/dev/null 2>&1; then say OK claude "$("$bin" --version < /dev/null 2>/dev/null | head -1 || echo "$bin")"
+  else say FAIL claude "CLAUDE_BIN '$bin' not found"; fi
+
+  if [[ ! -s "$ledger" ]]; then
+    say WARN last-run "no runs yet ($ledger)"
+  else
+    last="$(jq -Rc 'fromjson? | objects' "$ledger" | tail -n 1)"
+    now="$(date +%s)"
+    # ts is local time with an offset (2026-09-26T21:30:00-0600): UTC epoch = wall clock - offset
+    age="$(jq -r --argjson now "$now" '(.ts // "")
+             | (try (capture("^(?<b>[0-9-]{10}T[0-9:]{8})(?<s>[+-])(?<h>[0-9]{2}):?(?<m>[0-9]{2})$")
+                     | ((.b + "Z") | fromdateiso8601)
+                       - ((if .s == "-" then -1 else 1 end) * ((.h | tonumber) * 3600 + (.m | tonumber) * 60)))
+                catch null)
+             | if . == null then "?" else (($now - .) / 3600 | floor | tostring) end' <<< "$last")"
+    case "$(jq -r '.status' <<< "$last")" in
+      failed) say FAIL last-run "failed ${age}h ago: $(jq -r '.skipped_reason // "unknown"' <<< "$last")" ;;
+      *) if [[ "$age" != "?" && "$age" -gt 72 ]]; then say WARN last-run "$(jq -r '.status' <<< "$last") but ${age}h ago (schedule stopped?)"
+         else say OK last-run "$(jq -r '"\(.status), \(.pages) page(s), $\(.cost_usd)"' <<< "$last") · ${age}h ago"; fi ;;
+    esac
+    local leaks
+    leaks="$(jq -R 'fromjson? | objects' "$ledger" | jq -s '[.[-14:][] | select(.skipped_reason == "canary_leak" or .skipped_reason == "input_leak")] | length')"
+    if [[ "$leaks" -gt 0 ]]; then say FAIL canary "$leaks privacy self-test failure(s) in the last 14 runs (canary_leak/input_leak)"
+    else
+      # quiet days (no activity, locked, budget-skipped) record no canary: judge the latest run that did
+      local lastc
+      lastc="$(jq -R 'fromjson? | objects' "$ledger" | jq -rs '[.[] | select((.canary // "") != "")] | last | .canary // ""')"
+      if [[ "$lastc" == ok ]]; then say OK canary "latest privacy self-test passed"
+      else say WARN canary "no run has recorded a privacy self-test yet"; fi
+    fi
+    local spent pct
+    spent="$(jq -Rn --arg m "$(date +%Y-%m)" '[inputs | fromjson? | objects | select((.ts // "") | startswith($m)) | (.cost_usd // 0) | numbers] | add // 0' "$ledger")"
+    if [[ "$cap" =~ ^[0-9]+(\.[0-9]+)?$ ]] && jq -e -n --argjson c "$cap" '$c > 0' >/dev/null; then
+      pct="$(jq -n --argjson s "$spent" --argjson c "$cap" '$s / $c * 100 | floor')"
+      if [[ "$pct" -ge 100 ]]; then say FAIL spend "\$$spent of \$$cap this month: runs are being skipped"
+      elif [[ "$pct" -ge 80 ]]; then say WARN spend "\$$spent of \$$cap this month (${pct}%)"
+      else say OK spend "\$$spent of \$$cap this month (${pct}%)"; fi
+    else
+      say WARN spend "\$$spent this month, no monthly cap (MONTHLY_BUDGET_USD='$cap')"
+    fi
+    local anom
+    anom="$(jq -R 'fromjson? | objects' "$ledger" | jq -s '[.[-14:][] | select(.cost_anomaly == true)] | length')"
+    if [[ "$anom" -gt 0 ]]; then say WARN cost "$anom cost anomal$([[ "$anom" == 1 ]] && echo y || echo ies) in the last 14 runs (see: loopwatch ledger)"
+    else say OK cost "no cost anomalies in the last 14 runs"; fi
+    pv_run="$(jq -r '.prompt_version // ""' <<< "$last")"
+  fi
+
+  # prompt drift: prompts/schemas changed since the last run, and the eval golden is current
+  pv_now="$( # shellcheck disable=SC1091
+             source "$ROOT_DIR/lib/common.sh"; prompt_version "$ROOT_DIR")"
+  if [[ -n "${pv_run:-}" && "$pv_run" != "$pv_now" ]]; then say WARN prompts "changed since the last run ($pv_run -> $pv_now): watch the next run's pages and cost"
+  else say OK prompts "prompt_version $pv_now"; fi
+  gold="$ROOT_DIR/test/eval/fixtures/day1/recorded/PROMPT_VERSION"
+  if [[ -f "$gold" ]]; then
+    if [[ "$(tr -d ' \n' < "$gold")" == "$pv_now" ]]; then say OK eval-golden "recorded under the current prompts"
+    else say WARN eval-golden "recorded under $(tr -d ' \n' < "$gold"), prompts are now $pv_now (run test/eval/run-eval.sh --live, then --record)"; fi
+  fi
+  if [[ -f "$ROOT_DIR/test/ci-policy.sh" ]]; then
+    if bash "$ROOT_DIR/test/ci-policy.sh" >/dev/null 2>&1; then say OK ci-policy "workflows pinned, least privilege"
+    else say FAIL ci-policy "$(bash "$ROOT_DIR/test/ci-policy.sh" 2>&1 | grep -m1 -i 'fail\|violation' || echo 'violations found (run test/ci-policy.sh)')"; fi
+  fi
+  echo "doctor: $fails fail, $warns warn"
+  [[ "$fails" -eq 0 ]]
 }
 
 sub="${1:-help}"; shift || true
 case "$sub" in
-  run)       exec "$ROOT_DIR/bin/loopwatch-run.sh" --target "${LOOPWATCH_TARGET:-manual}" "$@" ;;
-  dry-run)   exec "$ROOT_DIR/bin/loopwatch-run.sh" --dry-run "$@" ;;
-  sources)   exec "$ROOT_DIR/bin/loopwatch-run.sh" --list-sources ;;
-  preflight) exec "$ROOT_DIR/bin/loopwatch-run.sh" --preflight ;;
-  discover)  exec "$ROOT_DIR/bin/loopwatch-discover.sh" "$@" ;;
+  run)       exec "$BASH" "$ROOT_DIR/bin/loopwatch-run.sh" --target "${LOOPWATCH_TARGET:-manual}" "$@" ;;
+  dry-run)   exec "$BASH" "$ROOT_DIR/bin/loopwatch-run.sh" --dry-run "$@" ;;
+  sources)   exec "$BASH" "$ROOT_DIR/bin/loopwatch-run.sh" --list-sources ;;
+  preflight) exec "$BASH" "$ROOT_DIR/bin/loopwatch-run.sh" --preflight ;;
+  discover)  exec "$BASH" "$ROOT_DIR/bin/loopwatch-discover.sh" "$@" ;;
   ledger)    cmd_ledger "$@" ;;
+  doctor)    cmd_doctor ;;
   setup)     cmd_setup ;;
   schedule)  cmd_schedule "$@" ;;
   update)    git -C "$ROOT_DIR" pull --ff-only ;;

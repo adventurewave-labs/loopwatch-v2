@@ -1,0 +1,12 @@
+# Text that must pass through the scrubber UNCHANGED (false-positive guard).
+commit 3f2a9c1d4e5b6a7c8d9e0f1a2b3c4d5e6f7a8b9c fixed the watermark reset
+request id 550e8400-e29b-41d4-a716-446655440000 timed out
+pip install scikit-learn==1.5.2 and task-12345 are unrelated
+see docs at https://docs.example.com/guide#section-3
+ran kubectl get pods -n ingest --selector=app=worker
+the token budget was 4096 and max_tokens=1024
+the SKILLS matrix and SKU-12345 inventory are fine
+called hf_hub_download(repo_id="org/model") then dapi-docs
+sha256 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08 matched
+glc_ in a sentence, dp.st. alone, pul- prefix alone, npm_ alone
+port mapping 8080:80 and ratio 16:9 and time 12:30:45
