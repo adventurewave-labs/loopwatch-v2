@@ -1,0 +1,4 @@
+{"total_count": 1, "items": [
+  {"number": 42, "repository_url": "https://api.github.com/repos/marcuspat/turbo-rig", "closed_at": "2026-09-25T21:00:00Z",
+   "title": "gate-log: add cached tokens column", "body": "Adds `cached` to gate-log.jsonl so activity.py can show cache hit rate.\n\nTested with the smoke suite."}
+]}

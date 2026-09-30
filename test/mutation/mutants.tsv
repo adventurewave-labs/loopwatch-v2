@@ -1,0 +1,35 @@
+# id	file	suites (fast first; first failure kills)	anchor (exact, once)	replacement	what it breaks
+# \n = newline, \t = tab, \\ = backslash in anchor/replacement
+allow-neutralize-off	lib/extract.sh	fuzz,smoke	def neutralize: gsub("<(?!" + allowed_tail + ")"; "&lt;");	def neutralize: .;	allowlist stops escaping disallowed tags
+allow-br-attrs	lib/extract.sh	fuzz,smoke	(?:br|hr) ?/?>	(?:br|hr)[^>]*>	allowlist lets <br>/<hr> carry attributes
+allow-bodyok-any	lib/extract.sh	fuzz,smoke	| all(test("^(" + allowed_tag + ")$"));	| true;	body gate accepts anything
+block-script-test	lib/publish.sh	fuzz,smoke	if ($raw | test("<\\\\s*script"; "i")) then	if false then	[redundant] no direct <script> check (script is also in the element list)
+block-iframe	lib/publish.sh	fuzz,smoke	^(script|iframe|object|	^(script|object|	iframe not an embedding element
+block-meta-refresh	lib/publish.sh	fuzz,smoke	.n == "http-equiv"	.n == "http-equivX"	meta http-equiv allowed
+block-on-attr	lib/publish.sh	fuzz,smoke	(.attrs | any(.n | startswith("on")))	(.attrs | any(.n | startswith("onX")))	[redundant] on* attribute names unchecked (two decoded-text scans catch the same handlers)
+block-on-rawspans	lib/publish.sh	fuzz,smoke	            or ($rawspans | any(test("[\\\\s/\\"\\u0027]on[a-z]+\\\\s*="; "i")))\n        then "on* event handler"	        then "on* event handler"	[redundant] quote-unaware handler scan removed (the attribute-grammar tokenizer now parses those tags)
+block-js-url	lib/publish.sh	fuzz,smoke	|javascript:|vbscript:|	|vbscript:|	javascript: URLs allowed
+block-urlnorm-ws	lib/publish.sh	fuzz,smoke	def urlnorm: gsub("[\\t\\n\\r]"; "") | 	def urlnorm: 	URL whitespace not stripped
+block-hex-entity	lib/publish.sh	fuzz,smoke	      gsub("&#[xX]0*(?<h>[0-9a-fA-F]{1,6});?"; (.h | hexval | [.] | implode))\n      | 	      	hex entities not decoded
+block-css-comment	lib/publish.sh	fuzz,smoke	def css: gsub("(?s)/\\\\*.*?\\\\*/"; "")	def css: .	CSS comments not stripped
+scrub-off	lib/redact.sh	scrub,smoke	    'reduce $rules[0][] as $r (.; gsub($r.re; $r.repl; $r.flags))'	    '.'	scrub_all rewrites nothing
+rule-github	lib/redact.sh	scrub,smoke	"gh[pousr]_[A-Za-z0-9]{20,}"	"gh[ou]_[A-Za-z0-9]{20,}"	GitHub ghp_/ghs_ tokens missed
+rule-email	lib/redact.sh	scrub,smoke	{1,64}@[A-Za-z0-9-]	{1,64}@@[A-Za-z0-9-]	emails missed
+rule-bearer-case	lib/redact.sh	scrub,smoke	"bearer\\\\s+[A-Za-z0-9._~+/=-]{20,}", "i"]	"bearer\\\\s+[A-Za-z0-9._~+/=-]{20,}", ""]	Bearer matched case-sensitively
+rule-azure	lib/redact.sh	scrub,smoke	"AccountKey=	"AccountKeyX=	Azure keys missed
+rule-assign-digit	lib/redact.sh	scrub,smoke	(?=[^\\\\s\\"'"'"',;]*[0-9])		assignment rule drops its needs-a-digit guard (false positives)
+canary-leak-blind	lib/redact.sh	scrub,smoke	case "$out" in *"$CANARY_ID"*)	case "$out" in *"NEVER$CANARY_ID"*)	surviving canary not detected
+canary-streams	lib/redact.sh	smoke	if [[ "$got" -lt "$want" ]]; then	if [[ "$got" -lt 0 ]]; then	unscrubbed bundle files not detected
+input-scan-off	lib/redact.sh	smoke	  [[ -z "$hits" ]] || { printf	  true || { printf	input_scan never blocks
+postscan-off	lib/redact.sh	smoke	      log "postscan: dropped a page (rules: $kinds)"\n      echo "$slug" >> "$RUN_DIR/.postscan-drop.txt"\n      rm -f "$RUN_DIR/$file"	      :	postscan never drops a page
+budget-exhausted	lib/common.sh	smoke	'$l < 0.05'	'$l < -1'	monthly cap never skips
+budget-clamp	lib/common.sh	smoke	'$l < $b'	'$l < 0'	run budget not clamped to what is left
+budget-badcfg	lib/common.sh	smoke	[[ "$cap" =~ ^[0-9]+(\\.[0-9]+)?$ ]] ||	true ||	non-numeric cap not rejected
+budget-month	lib/common.sh	smoke	select((.ts // "") | startswith($m))	select((.ts // "") | startswith(""))	other months counted
+retry-budget	lib/common.sh	smoke	in *budget*|*max_turns*) return 1	in *max_turns*) return 1	[redundant] budget-capped calls retried (a budget error never carries a transient status, so the classifier refuses it anyway)
+retry-leftover	lib/common.sh	smoke	'($b - $s) * 100 | floor / 100'	'$b'	retries get the full stage budget again
+ground-and-or	lib/extract.sh	smoke	($u | length) >= $dmin and	($u | length) >= $dmin or	grounding drops on either condition
+ground-off	lib/extract.sh	smoke	  [[ "${GROUNDING:-on}" != "off" ]] || return 0	  return 0	grounding never runs
+wm-partial	lib/collect.sh	prop,smoke	        consumed=$(( len - partial ))	        consumed="$len"	partial trailing line consumed
+wm-fingerprint	lib/collect.sh	prop,smoke	if [[ -n "$head_fp" && "$(wm_head_of	if false && [[ -n "$head_fp" && "$(wm_head_of	replacement past old offset not detected
+wm-shrink	lib/collect.sh	prop,smoke	      if [[ "$size" -lt "$old" ]]; then\n        log "source shrank	      if false; then\n        log "source shrank	shrink check removed (fingerprint is the backstop)
