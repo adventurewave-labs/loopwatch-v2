@@ -1,0 +1,13 @@
+{
+  "pages": 1,
+  "cost_usd": 0.042,
+  "mean": {
+    "faithfulness": 5,
+    "specificity": 5,
+    "reusability": 5,
+    "clarity": 5
+  },
+  "min_faithfulness": 5,
+  "model": "haiku",
+  "recorded": "2026-09-26T22:23:21Z"
+}

@@ -1,0 +1,61 @@
+{
+  "type": "result",
+  "subtype": "success",
+  "is_error": false,
+  "duration_ms": 17077,
+  "num_turns": 3,
+  "result": "{\"digest_summary\":\"loopwatch v0.2 revival continued in parallel: session 1 (claude-code-1) implemented phases 1–5 of the full spec (cost floor, privacy, two-tier extraction, GitHub source, PR publishing), while session 2 (claude-code-2) isolated and fixed the critical self-ingestion loop where nightly headless runs re-mined their own transcripts. Cost now visible, bounded, and zero on quiet days.\",\"highlights\":\"Implemented loopwatch v0.2 phases 1–5: bundle cap, activity floor, ledger skeleton, redaction + preflight, two-tier triage/extract, GitHub API source, PR publish flow\\nIdentified root cause of cost compounding: claude -p persists sessions under ~/.claude/projects/encoded-cwd/, so tmpdir runs get re-ingested nightly\\nThree-layer fix for self-ingestion: --no-session-persistence flag, fixed run dir with exclusion patterns, watermark filtering for moved projects\\nLearned --max-budget-usd enforcement behavior: budget hit returns error and exit 1, requires fail-closed handling (keep watermarks, ledger skip reason)\\nmacOS gotcha discovered: /var symlinks to /private/var, so encoded project dir names differ; suffix matching needed for robust exclusion\\nSmoke tests now cover bundle cap, self-ingest exclusion, partial-line handling, truncation recovery, hashed state paths\",\"candidates\":[{\"id\":\"c1\",\"title\":\"Self-ingestion loop: root cause, three-layer fix, and --max-budget-usd behavior\",\"category\":\"debugging\",\"why\":\"Non-obvious bug where headless Claude sessions auto-persist under ~/.claude/projects/<encoded-cwd>/; each night re-mines the previous night's input. Fix involves CLI flag, fixed run dir with pattern matching, and watermark filtering, plus a platform gotcha (macOS /var symlink) and cost enforcement semantics worth preserving.\",\"evidence\":[{\"file\":\"bundle/transcripts/claude-code-2.txt\",\"start_line\":2,\"end_line\":9}]}]}",
+  "structured_output": {
+    "digest_summary": "loopwatch v0.2 revival continued in parallel: session 1 (claude-code-1) implemented phases 1–5 of the full spec (cost floor, privacy, two-tier extraction, GitHub source, PR publishing), while session 2 (claude-code-2) isolated and fixed the critical self-ingestion loop where nightly headless runs re-mined their own transcripts. Cost now visible, bounded, and zero on quiet days.",
+    "highlights": "Implemented loopwatch v0.2 phases 1–5: bundle cap, activity floor, ledger skeleton, redaction + preflight, two-tier triage/extract, GitHub API source, PR publish flow\nIdentified root cause of cost compounding: claude -p persists sessions under ~/.claude/projects/encoded-cwd/, so tmpdir runs get re-ingested nightly\nThree-layer fix for self-ingestion: --no-session-persistence flag, fixed run dir with exclusion patterns, watermark filtering for moved projects\nLearned --max-budget-usd enforcement behavior: budget hit returns error and exit 1, requires fail-closed handling (keep watermarks, ledger skip reason)\nmacOS gotcha discovered: /var symlinks to /private/var, so encoded project dir names differ; suffix matching needed for robust exclusion\nSmoke tests now cover bundle cap, self-ingest exclusion, partial-line handling, truncation recovery, hashed state paths",
+    "candidates": [
+      {
+        "id": "c1",
+        "title": "Self-ingestion loop: root cause, three-layer fix, and --max-budget-usd behavior",
+        "category": "debugging",
+        "why": "Non-obvious bug where headless Claude sessions auto-persist under ~/.claude/projects/<encoded-cwd>/; each night re-mines the previous night's input. Fix involves CLI flag, fixed run dir with pattern matching, and watermark filtering, plus a platform gotcha (macOS /var symlink) and cost enforcement semantics worth preserving.",
+        "evidence": [
+          {
+            "file": "bundle/transcripts/claude-code-2.txt",
+            "start_line": 2,
+            "end_line": 9
+          }
+        ]
+      }
+    ]
+  },
+  "total_cost_usd": 0.0483768,
+  "usage": {
+    "input_tokens": 9,
+    "cache_creation_input_tokens": 15110,
+    "cache_read_input_tokens": 35468,
+    "output_tokens": 1333,
+    "output_tokens_details": {
+      "thinking_tokens": 0
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 15110,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 7,
+        "output_tokens": 1246,
+        "cache_read_input_tokens": 25202,
+        "cache_creation_input_tokens": 174,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 174
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  }
+}

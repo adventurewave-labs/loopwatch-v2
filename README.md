@@ -1,93 +1,134 @@
 # loopwatch
 
-Unattended nightly loop: mines your Claude Code sessions, Cowork sessions, and git activity for anything of durable reference value, publishes self-contained HTML pages + a daily digest into your HTML repo, and lets your existing push→Vercel pipeline do the rest.
-
-> **Privacy is enforced, not advised (v0.2):** transcripts are collected only from allowlisted projects (`INCLUDE_PROJECTS`, empty = nothing). Secrets and every term in your local `redact.list` are scrubbed before the model sees anything, and generated pages are re-scanned afterwards, with any hit dropping the page. A publishing run refuses to start unless `SITE_VISIBILITY=protected` (Vercel Deployment Protection), and `loopwatch-run.sh --preflight` shows each check.
+Turns the day's Claude Code, Cowork and GitHub activity into a **private, searchable reference catalog**. Each run stays within a fixed token budget and is published through a **PR you merge**. Run it on demand from a session ("run loopwatch"), or opt in to a nightly schedule.
 
 ```
-~/.claude/projects/**/*.jsonl ┐
-cowork session *.jsonl        ├─ collect (byte-offset watermarks, jq filter, secret scrub)
-git repos (HEAD watermarks)   ┘        │
-                                       ▼
-                          claude -p prompts/extract.md
-                          (headless; writes pages/*.html + run-meta.json to staging)
-                                       │
-                                       ▼
-                          validate → dedup → install pages → digest →
-                          manifest.json merge → git commit + push → Vercel
+~/.claude/projects/*/*.jsonl ┐  allowlist (INCLUDE_PROJECTS) · self-exclusion · byte watermarks
+Cowork session *.jsonl       ├─ filter (text + compact [tool:X] lines) · scrub secrets + redact.list
+GitHub API (commits, PRs)    ┘  your commits + merged PRs · catalog repo excluded · no local clones
+                                        │  MAX_BUNDLE_KB cap, oldest trimmed first
+                                        ▼  (below ACTIVITY_MIN_BYTES: stop — zero model calls)
+                 Stage A  triage   haiku, read-only  → digest + 0..5 candidates with line-range evidence
+                                        │  (0 candidates: stop — no Stage B)
+                 Stage B  writing  sonnet, sees ONLY the cited excerpts → pages/*.html
+                                        ▼
+                 validator (no script/handlers/embeds/external loads) → post-scan (secrets + redact.list)
+                                        ▼
+                 catalog repo: loopwatch/<date>-<time> branch (or the open PR) → gh pr create → you review and merge → Railway serves main behind auth
+                                        ▼
+                 ledger row (~/.local/state/loopwatch/runs.jsonl): tokens, cost, pages, skip reason
 ```
+
+## Install (Mac)
+
+```sh
+gh repo clone adventurewave-labs/loopwatch-v2 ~/.local/share/loopwatch
+~/.local/share/loopwatch/bin/install.sh      # creates ~/.config/loopwatch/{loopwatch.conf,redact.list}, links ~/.local/bin/loopwatch
+$EDITOR ~/.config/loopwatch/loopwatch.conf   # INCLUDE_PROJECTS: empty means nothing is collected
+$EDITOR ~/.config/loopwatch/redact.list      # client / entity names, one regex per line
+loopwatch sources                            # what would be collected, and why each source is in or out
+loopwatch preflight                          # privacy + visibility checks
+loopwatch dry-run                            # full pipeline, nothing published, staging kept
+loopwatch run                                # the real thing: opens or updates the catalog PR
+```
+
+The installer needs `bash` (stock 3.2 is fine), `jq`, `git`, an authenticated `gh`, and the `claude` CLI. It installs no schedule. To add one:
+`loopwatch schedule install 21 30` (launchd, `target=nightly`). Remove it with `loopwatch schedule remove`.
+
+From a Claude Code or Cowork session, just ask: *"run loopwatch"*. That runs `loopwatch run`. The ledger row records `target: manual`.
+
+## Commands
+
+| | |
+|---|---|
+| `loopwatch run [--export-md DIR]` | collect → triage → write → validate → PR |
+| `loopwatch dry-run` | same, without publishing. The run dir is kept for inspection |
+| `loopwatch sources` | every candidate source with `include` / `skip:self` / `skip:not-allowlisted` |
+| `loopwatch preflight` | PASS/WARN/FAIL checks. Exits non-zero on any FAIL |
+| `loopwatch ledger [N]` | last N runs, plus totals and the median cost of runs that made model calls |
+| `loopwatch doctor` | health at a glance, one OK/WARN/FAIL line each: config, `redact.list` mode, dependencies, the last run and its age, the privacy self-test over the last 14 runs, monthly spend against the cap, cost anomalies, prompt drift since the last run, whether the eval golden matches the current prompts, and the CI policy. Exits 1 on any FAIL, so it can gate a cron or a status bar |
+| `loopwatch discover` | read-only report on this machine's transcript paths and schema (Phase 0) |
+| `loopwatch schedule install [HH MM] \| remove \| print` | opt-in nightly launchd job |
+| `loopwatch setup` / `update` / `version` | |
+
+## Cost controls
+
+- **Zero calls on quiet days.** A run stops before any model call if the new content (headers excluded) is under `ACTIVITY_MIN_BYTES` (default 2000, provisional). Transcripts from loopwatch's own runs never count toward it.
+- **Hard caps.** `MAX_BUNDLE_KB` caps the whole bundle (oldest content is trimmed first, and the trim is logged). `BUDGET_USD` caps each run. It is passed to every call as `--max-budget-usd`: triage gets `min(TRIAGE_BUDGET_USD, BUDGET_USD)`, and the writer gets what's left. A call that hits its cap fails the run **closed**: watermarks are held and the ledger records `skipped_reason: budget_exceeded`.
+- **Two tiers, one call each.** Haiku triages everything. Sonnet runs only when triage found candidates, and gets only the cited line ranges. Both calls are tool-free (`--tools ""`), schema-constrained (`--json-schema`, with triage evidence pinned to the run's real file paths), and run with extended thinking off (`THINKING_TOKENS=0`).
+- **Visible.** Every run appends one JSON line to `~/.local/state/loopwatch/runs.jsonl`. It uses Turbo Rig's field names (`ts, repo, target, model, in, cached, out, cost_usd, duration_ms`) plus `pages, skipped_reason, status, stages[], bundle_bytes, trimmed_bytes, validator_drops, postscan_drops`. The file is separate from `gate-log.jsonl`, so gate-verdict stats stay clean.
+- **Near-duplicate guard.** Slug dedup only catches exact repeats, so each new page's title and summary are also compared (token Jaccard, title weighted double) with every catalog entry and with pages kept earlier in the run. A page at or above `NEAR_DUP_THRESHOLD` (0.55, 0 = off) is skipped and counted as `near_dup_drops`.
+- **Related pages.** Each new page gets a static "Related" list above its footer: up to `RELATED_PAGES` (3, 0 = off) catalog pages ranked by BM25 over title, tags and summary, at or above `RELATED_MIN_SCORE` (1.5). Plain links, no JavaScript; titles are escaped, only `pages/<year>/<slug>.html` paths are linked, and the page is re-validated after the list is added.
+- **OpenTelemetry (optional).** Set `OTEL_EXPORT_DIR` and/or `OTEL_EXPORTER_OTLP_ENDPOINT` (+ `OTEL_EXPORTER_OTLP_HEADERS`) and each run is also exported as an OTLP/JSON trace that follows the GenAI semantic conventions: a `loopwatch run` root span plus one `chat <model>` client span per stage, with `gen_ai.request.model`, `gen_ai.usage.input_tokens` / `output_tokens` / `cache_read.input_tokens` and `loopwatch.cost_usd`. Spans carry counts and costs only, never content. A collector error only logs a warning.
+- **Structured logs.** Besides the readable log, every run writes `logs/<run_id>.jsonl`: one JSON line per event with `ts`, `level` (info/warn/error), `run_id`, `trace_id` and `msg`. `LOG_FORMAT=json` prints the same lines on stderr. With OpenTelemetry on, they are also exported as OTLP logs (`<run_id>.otlp-logs.json`, `POST /v1/logs`) on the run's trace, so a backend shows each span with its log lines.
+
+Measured on claude 2.1.283, on the same sample day (dry runs, not a monthly average). Structured mode: a **3-page day cost $0.158** in 69s ($0.057 Haiku + $0.101 Sonnet). The earlier agentic mode, with tool reads and a model-written HTML file, produced **1 page for $0.376**. That is about 83% less per page. Each `claude -p` call has a fixed floor of about $0.013–0.018.
+
+## Privacy is enforced, not advised
+
+- **Allowlist.** Only sources matching `INCLUDE_PROJECTS` are read, and an empty list reads nothing, GitHub included. Patterns match the dir name (`*-src-turbo-flow`) or `label:name` (`cowork:*`, `github:marcuspat/*`). `EXCLUDE_PROJECTS` wins. The catalog repo is always excluded from GitHub collection, so loopwatch never re-reads its own output.
+- **Model isolation.** Neither model call gets any tool (`--tools ""`), so the model cannot read or write files. It sees only what loopwatch puts on stdin: the scrubbed bundle for triage, and only the cited excerpts for the writer. All collected data is fenced in `<file>`/`<excerpt>` tags that the system prompt defines as data, never instructions (spotlighting), and a fence tag inside the data is neutralized so content cannot close it. Page HTML is rendered by loopwatch from the returned body, then validated.
+- **Scrub before the model.** Built-in patterns cover OpenAI/Anthropic `sk-` keys, Stripe `sk_/rk_/pk_ live/test`, GitHub tokens, AWS, Slack, Google `AIza`, JWTs, PEM headers, bearer tokens, `scheme://user:pass@` connection strings, `password=`/`token:`/`api_key=` assignments, and emails. On top of those, every line of your gitignored `redact.list` is applied, case-insensitive, with an optional `=>replacement`.
+- **Scan after the model.** Pages, titles, summaries, tags, slugs and the digest are re-scanned with the same rules. Any hit drops the page, or withholds the digest text. The drop is counted in the ledger without the matched text.
+- **Page firewall.** The validator reads real tags (a quoted `>` does not end a tag), decodes character references, and strips tab/CR/LF before matching. It drops any page with `<script`, `on*=` handlers, `iframe/object/embed/form/link/base/svg/math`, `<meta http-equiv>`, an external/`javascript:`/`data:` (non-image) URL in `src`/`href`/`srcset`/`action`/`poster`/…, or any CSS `url()`/`@import`/`expression()`. The catalog's CSP (`script-src 'self'`) is a second layer.
+- **Private catalog.** A publishing run refuses to start unless `SITE_VISIBILITY=protected`. With `SITE_URL` set, preflight also fetches `manifest.json` without credentials and fails unless the request is refused. The catalog is served on Railway by the catalog repo's `server.js`: Basic Auth, **fail closed** (503 until `CATALOG_USER`/`CATALOG_PASSWORD` are set), strict CSP (`script-src 'self'`) and `noindex`.
+- **No paths in state.** Watermark keys are sha256 hashes, and state lives in `~/.local/state/loopwatch`. Nothing from state is committed anywhere.
+
+## Publishing model
+
+The catalog is a separate private repo (`CATALOG_REPO`, default `marcuspat/loopwatch-catalog`) holding `site/` only. loopwatch keeps a tool-managed clone under `~/.local/state/loopwatch/catalog`.
+
+- **Branches and PRs.** A run with no open loopwatch PR starts a fresh `loopwatch/<date>-<time>` branch from `main` and opens a PR. While a loopwatch PR is open, later runs add commits to it, so there is at most one open PR and `manifest.json` never conflicts. If `gh` can't say whether a PR is open, the run fails rather than risk a second one.
+- **Closing a PR discards it.** A closed PR's branch is never reused, so its content is not re-proposed and not re-mined.
+- **Push safety.** loopwatch refuses to push anything except `loopwatch/*` branches. Watermarks advance only after the push lands.
+
+## Correctness
+
+- Transcripts are watermarked by byte offset. The watermark stops at the **last newline**, so a session still being written never loses its tail. A file that shrank is re-read from 0, and so is one that was rotated or rewritten past its old offset: each offset carries a fingerprint of the file's first bytes (up to 1 KB), and a mismatch means the file was replaced. `test/prop/watermarks.sh` checks the invariant with random append, partial-line, truncate, rotate and failed-run sequences: every line complete at a committed run is delivered exactly once. The first sighting of a file only mines it if it was touched in the last `FIRST_RUN_LOOKBACK_HOURS` (48).
+- **No self-ingestion.** Headless calls use `--no-session-persistence` and always run from `~/.local/state/loopwatch/run`. That project dir, and v0.1's `loopwatch-XXXXXX` temp dirs, are excluded, and lines whose `cwd` is the run dir are dropped. See `docs/revival-notes.md` for the experiment that confirmed the bug.
+- A mkdir lock serializes runs. It records its PID, and a lock whose process is gone (or older than `LOCK_STALE_HOURS`) is reclaimed, so a crash can't silently stop later runs. A run that finds a live lock writes a `skipped_reason: locked` ledger row.
+- A result the CLI flags as an error (`is_error: true`) fails the run, even when `claude` exits 0.
+- Transcript lines are parsed one at a time, so a malformed line is skipped without losing the rest.
+- Any failure leaves an autopsy (the whole run dir) in `~/.local/state/loopwatch/failed/`, keeping the last 5.
+
+## Seams
+
+- **Turbo Rig:** the ledger above. `EXPORT_DIGEST_TO=~/turbo-rig/memory/inbox/` also writes `loopwatch-YYYY-MM-DD.md` next to the rig's own digest.
+- **turbo-brain:** `site/manifest.json` v1 is a documented contract (`docs/manifest-schema.md`). `--export-md DIR` writes pages as Markdown with front-matter.
 
 ## Layout
 
 ```
-loopwatch/
-├── bin/loopwatch-run.sh      pipeline entrypoint (cron/launchd target)
-├── bin/install.sh            launchd installer (default 21:30 daily)
-├── bin/smoke-test.sh         end-to-end test with a stubbed claude CLI
-├── lib/collect.sh            delta collection, watermarks, scrubbing
-├── lib/publish.sh            validation, digest, manifest merge, commit
-├── prompts/extract.md        the extraction agent — value bar lives here
-├── site/index.html           static catalog shell (tree + search + digests)
-├── site/manifest.json        single data source for the whole catalog
-├── site/pages/YYYY/*.html    generated reference pages
-├── site/digests/*.html       generated daily digests
-├── state/watermarks.json     committed with content → atomic resume point
-└── launchd/…plist            template used by install.sh
+bin/loopwatch            CLI entry (run, dry-run, sources, preflight, ledger, discover, schedule, setup)
+bin/loopwatch-run.sh     the pipeline
+bin/loopwatch-discover.sh read-only Phase 0 discovery
+bin/install.sh           tool install (no schedule)
+lib/collect.sh           transcripts: allowlist, self-exclusion, watermarks, filter, bundle cap
+lib/collect_github.sh    GitHub API source
+lib/redact.sh            scrub + post-scan rules
+lib/extract.sh           two-tier extraction
+lib/publish.sh           validator, digest, manifest merge
+lib/catalog.sh           catalog clone, branch, push, PR
+lib/preflight.sh         privacy/visibility checks
+lib/export.sh            --export-md, EXPORT_DIGEST_TO
+lib/common.sh            claude runner (flag detection, JSON usage), ledger
+lib/otel.sh              optional OTLP/JSON export (GenAI semantic conventions)
+prompts/triage.md        Stage A: the value bar and candidate contract
+prompts/extract.md       Stage B: page contract
+site/                    catalog UI seed (index.html, app.js, manifest.json)
+catalog-template/        catalog repo files: server.js (auth, fails closed), railway.json, catalog-check CI
+test/smoke-test.sh       37 sandboxed end-to-end cases, stubbed claude + gh
+docs/                    PRD-v0.2, revival notes, manifest schema, v0.1 PRD
 ```
 
-## Install
+## Test and release
 
 ```sh
-# 1. drop this directory into your HTML repo root, commit it
-# 2. configure
-cp loopwatch.conf.example loopwatch.conf
-$EDITOR loopwatch.conf          # sources, GIT_REPOS, CLAUDE_BIN (absolute path: `which claude`)
-
-# 3. verify sources resolve (esp. the Cowork glob — it's a best guess)
-bin/loopwatch-run.sh --list-sources
-
-# 4. first pass without publishing (keeps staging dir for inspection)
-bin/loopwatch-run.sh --dry-run
-
-# 5. schedule
-bin/install.sh 21 30            # launchd, daily 21:30
-# or: 30 21 * * * "/path/to/repo/loopwatch/bin/loopwatch-run.sh"
+test/smoke-test.sh   # no network, no real model, no real transcripts, ~30s
 ```
 
-Deps: `bash`, `git`, `jq`, `claude` CLI. Written against macOS stock bash 3.2 (no flock, no assoc arrays, no GNU-only flags).
+CI runs the smoke suite on ubuntu, and on macOS under `/bin/bash`. That is stock 3.2.57, the same bash launchd uses, with the BSD userland. It also runs `shellcheck -S error`. CI runs on every push and PR, and weekly. `bin/ship.sh [patch|minor|major]` runs the tests, bumps `VERSION`, tags, and pushes. `release.yml` gates the GitHub release on the same suite. Each release ships a reproducible tarball, an SPDX 2.3 SBOM (`bin/loopwatch-sbom.sh`: every file with SHA1/SHA256, the runtime requirements, the pinned build actions) and `SHA256SUMS`. The tarball and SBOM carry a signed SLSA build-provenance attestation, which you can check with `gh attestation verify loopwatch-vX.Y.Z.tar.gz -R adventurewave-labs/loopwatch-v2`.
 
-## Vercel wiring
+## Not in v0.2
 
-Everything is static. If your project deploys the repo root, the catalog lands at `/loopwatch/site/`. Cleaner options: set `SITE_DIR` in the conf to your existing public dir (e.g. `$REPO/public/catalog`), or add a `vercel.json` rewrite. `index.html` fetches `manifest.json` relative to itself, so it works at any mount path.
-
-## Semantics worth knowing
-
-- **Watermarks** — transcripts by byte offset (append-only JSONL), git repos by HEAD sha. Advanced only after a successful run, and committed *with* the content they produced, so a crash never skips or double-publishes. Reset a single source by deleting its key from `state/watermarks.json`.
-- **Dedup** — slug-level against the manifest; the extractor also sees `recent_slugs` in its context to avoid re-covering topics.
-- **Empty days** — below `ACTIVITY_MIN_BYTES` of new delta, the run exits without invoking the model. With activity but nothing page-worthy, you still get the daily digest (that's the "summary of the day" page).
-- **Failures** — non-zero exit leaves an autopsy (full staging dir incl. `claude-out.txt`) in `state/failed/`, keeps last 5. Watermarks don't advance, so the next run retries the same delta.
-- **Concurrency** — mkdir lock; manual runs are safe any time.
-- **Tuning the bar** — it's prose in `prompts/extract.md` ("would Marcus open this in 3 months?"). Too chatty → tighten the disqualifiers; too quiet → loosen. Model/cost knob is `MODEL` in the conf.
-
-## Test
-
-```sh
-bin/smoke-test.sh   # full pipeline in a temp repo with a stubbed claude — no network, ~2s
-```
-
-Covers: collection + filtering, secret scrubbing (planted token must not survive), publish, manifest/digest integrity, empty-run skip, dry-run side-effect freedom, slug dedup.
-
-## Ship loop
-
-- `bin/ship.sh [patch|minor|major] ["msg"]` — the whole release cycle in one command: local e2e, `VERSION` bump, commit, tag, push. Actions (`ci.yml` + `release.yml`) then re-runs e2e on ubuntu **and** macos and publishes the GitHub release. `ci.yml` also runs weekly against zero changes to catch env rot.
-- `bin/bootstrap-repo.sh [--codespace]` — one-shot repo creation (private, About, topics, first tag) from any machine with an authed `gh`; `--codespace` runs the e2e suite in a throwaway Codespace.
-- `.devcontainer/` — every Codespace self-installs deps and runs the smoke test during create, so a green Codespace boot *is* a passing e2e run.
-
-## Later: event-driven runs
-
-The nightly batch is deliberate (it's what makes the digest coherent). If you want near-real-time pages too, add a Claude Code `SessionEnd` hook that kicks the same pipeline — the lock and watermarks make overlapping triggers harmless:
-
-```json
-{ "hooks": { "SessionEnd": [ { "hooks": [ { "type": "command",
-  "command": "launchctl kickstart gui/$UID/com.marcuspatman.loopwatch" } ] } ] } }
-```
+The SessionEnd real-time trigger (deferred until the ledger shows stable costs), cross-day pattern learning, full-text body search, and any server or database. Cowork's transcript path is still the v0.1 guess until `loopwatch discover` confirms it on the Mac. Claude Code Desktop *cloud* sessions may not write local transcripts at all.

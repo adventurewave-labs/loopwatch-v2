@@ -1,0 +1,4 @@
+# ids of fuzz cases that pass the validator and were PROVEN inert in headless Chromium
+# (regenerate: test/fuzz/run-fuzz.sh --update-allowlist). One 12-hex id per line.
+10fdac2be4f7
+4c7f4fe74075
