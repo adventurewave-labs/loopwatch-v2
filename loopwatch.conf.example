@@ -13,21 +13,90 @@ COWORK_GLOBS=("$HOME/Library/Application Support/Claude/local-agent-mode-session
 # On first sighting, only files touched in the last N hours are mined; older
 # history is watermarked at its current size and never sent to the model.
 FIRST_RUN_LOOKBACK_HOURS=48
+LOCK_STALE_HOURS=6           # a lock whose PID is gone, or older than this, is reclaimed
 
-# Local git repos to mine (replaced by the GitHub API source in v0.2 phase 4).
-GIT_REPOS=()
+# GitHub activity via the API (R-8) — no local clones needed. Uses your `gh` auth.
+# Each scope is "user:<login>" or "org:<org>". Commits by GITHUB_AUTHOR + merged PRs.
+# GITHUB_SCOPES=() turns the GitHub source off. Repos must also pass INCLUDE_PROJECTS
+# ("github:owner/repo"); CATALOG_REPO is always excluded (no self-ingestion).
+GITHUB_SCOPES=("user:marcuspat" "org:adventurewave-labs" "org:creandotumatrix-labs")
+GITHUB_AUTHOR=""             # empty = the login gh is authenticated as
+GITHUB_MAX_PAGES=5           # x100 results per query; beyond that the window is held and retried
+GITHUB_INDEX_LAG_MIN=15      # window ends this many minutes ago (search index lag)
+GH_BIN="gh"
 
 # ── Cost (R-1, R-2) ──────────────────────────────────────────────────────
 CLAUDE_BIN="claude"          # absolute path (`which claude`) for scheduled runs
-MODEL="sonnet"
-BUDGET_USD="1.00"            # hard cap per run, passed as --max-budget-usd when supported
-MAX_TURNS=50                 # passed only if the CLI lists --max-turns (PASS_MAX_TURNS=true forces it)
+# Two-tier extraction (R-3): cheap triage reads the whole bundle; the writer runs
+# only when triage found candidates, and sees only the cited excerpts.
+TRIAGE_MODEL="haiku"
+TRIAGE_BUDGET_USD="0.30"     # stage A cap (also bounded by BUDGET_USD)
+MODEL="sonnet"               # stage B (writing)
+BUDGET_USD="1.00"            # hard cap per run across both stages (--max-budget-usd per call)
+MAX_CANDIDATES=5
+EXCERPT_MAX_KB=24            # per candidate
+EXCERPT_TOTAL_KB=80
+INCLUDE_TOOL_CALLS=true      # keep "[tool:Name] <command/path>" lines (results are always dropped)
+MONTHLY_BUDGET_USD="20.00"   # calendar-month cap across all runs (0 = off); a run that would exceed it is skipped, activity stays queued
+COST_ANOMALY_FACTOR=3        # flag (ledger + PR) a run costing >= 3x the rolling median
+FALLBACK_MODEL="haiku"       # writer falls back to this when MODEL is overloaded ("" = never)
+CLAUDE_RETRIES=2             # retries on transient failures (overload, 429/5xx, network); never on budget caps
+THINKING_TOKENS=0            # extended-thinking budget per call; 0 = off (most of the triage output cost when on)
 MAX_FILE_KB=120              # per-source delta cap after filtering
 MAX_BUNDLE_KB=300            # whole-bundle cap; oldest content is trimmed first
 ACTIVITY_MIN_BYTES=2000      # below this much real content, no model call at all (provisional default)
 SKIP_EMPTY=true
 
-# ── Publish ──────────────────────────────────────────────────────────────
-SITE_DIR=""                  # catalog site/ dir inside a git working copy
-PULL=true
-PUSH=true
+# Near-duplicate guard: a page whose title+summary token overlap (Jaccard, title weighted
+# double) with an existing catalog entry reaches this score is skipped. 0 = off.
+NEAR_DUP_THRESHOLD=0.55
+
+# Related pages: each new page gets a static "Related" list (BM25 over title, tags and summary)
+# linking up to RELATED_PAGES catalog pages that score at least RELATED_MIN_SCORE. 0 = off.
+RELATED_PAGES=3
+RELATED_MIN_SCORE=1.5
+
+# Retention: run logs, failure autopsies and the private copies of skipped pages older than
+# this many days are deleted at the start of each run (0 = keep forever). The ledger is kept.
+RETENTION_DAYS=30
+
+# ── Telemetry (optional) ─────────────────────────────────────────────────
+# Each run as an OTLP/JSON trace using the OpenTelemetry GenAI semantic conventions
+# (gen_ai.request.model, gen_ai.usage.input_tokens, ...). Counts and costs only, no content.
+OTEL_EXPORT_DIR=""                     # e.g. "$HOME/.local/state/loopwatch/otel": one file per run
+# OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:4318"   # also POST to a collector (/v1/traces)
+# OTEL_EXPORTER_OTLP_HEADERS="x-api-key=..."
+
+# ── Publish (R-9) ────────────────────────────────────────────────────────
+# Each run commits to loopwatch/<date> in the catalog repo and opens a PR; while a
+# loopwatch PR is open, later runs add to it. Nothing is ever pushed to CATALOG_BASE.
+CATALOG_REPO="adventurewave-labs/loopwatch-catalog"
+CATALOG_BASE="main"
+# CATALOG_DIR="$HOME/.local/state/loopwatch/catalog"   # tool-managed clone (default)
+
+# ── Privacy (R-5, R-6, R-7) ──────────────────────────────────────────────
+# Allowlist of project dirs to collect. EMPTY = COLLECT NOTHING (fails closed).
+# A pattern with ':' matches "<label>:<project-dir>", otherwise the dir name alone.
+# Claude Code dirs look like "-Users-you-src-turbo-flow". See: loopwatch-run.sh --list-sources
+# GitHub repos go through the same list, as "github:<owner>/<repo>".
+INCLUDE_PROJECTS=(
+  # "*-src-turbo-flow"
+  # "*-src-turbo-rig"
+  # "cowork:*"
+  # "github:marcuspat/*"
+  # "github:adventurewave-labs/*"
+)
+EXCLUDE_PROJECTS=()          # always wins over INCLUDE_PROJECTS
+
+# Client/entity names redacted before the model sees anything and re-scanned after.
+# One regex per line, optional "=>replacement". Never commit this file.
+REDACT_LIST="$HOME/.config/loopwatch/redact.list"
+
+# The catalog must be served behind authentication (the catalog repo's server.js:
+# Basic Auth, fails closed). Preflight fails unless this says "protected"
+# (or ALLOW_PUBLIC=true, which you should not set).
+SITE_VISIBILITY="protected"
+ALLOW_PUBLIC=false
+# Live check: preflight fetches $SITE_URL/manifest.json without credentials and
+# fails unless it is refused.
+SITE_URL="https://catalog-production-5b49.up.railway.app"

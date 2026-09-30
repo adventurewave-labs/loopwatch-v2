@@ -1,4 +1,3 @@
 loopwatch.conf
-state/logs/
-state/failed/
-state/.lock/
+redact.list
+*.log
