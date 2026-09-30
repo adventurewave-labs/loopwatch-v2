@@ -73,23 +73,55 @@
   $("#expand").onclick = () => document.querySelectorAll("#tree details").forEach((d) => (d.open = true));
   $("#collapse").onclick = () => document.querySelectorAll("#tree details").forEach((d) => (d.open = false));
 
-  // ── search ──
+  // ── search (ranked, prefix-aware, highlighted; see search.js) ──
   const search = $("#search");
+  const S = window.LoopwatchSearch;
+  const index = S ? S.buildIndex(entries) : null;
+  let active = -1;
+  const resultHtml = (r) => {
+    const e = r.entry, hl = (t) => (S ? S.highlight(t, r.terms) : esc(t));
+    return `<li class="entry">
+       <div class="row">
+         <a href="${esc(e.path)}">${hl(e.title)}</a>
+         <span class="cat">${hl(e.category)}</span>
+         <span class="date">${esc(e.date)}</span>
+       </div>
+       <div class="sum">${hl(e.summary)}</div>
+       ${(e.tags || []).length ? `<div class="tags">${(e.tags || []).map((t) => `<span>${hl(t)}</span>`).join("")}</div>` : ""}
+     </li>`;
+  };
+  function setActive(i) {
+    const items = document.querySelectorAll("#results .entry");
+    if (!items.length) { active = -1; return; }
+    active = Math.max(0, Math.min(items.length - 1, i));
+    items.forEach((el, k) => el.classList.toggle("active", k === active));
+    items[active].scrollIntoView({ block: "nearest" });
+  }
   function runSearch() {
-    const q = search.value.trim().toLowerCase();
+    const q = search.value.trim();
     const showTree = q === "";
     $("#tree").hidden = !showTree;
     $("#controls").hidden = !showTree || !entries.length;
     $("#results").hidden = showTree;
+    active = -1;
     if (showTree) return;
-    const hits = entries.filter((e) =>
-      [e.title, e.summary, e.category, ...(e.tags || [])]
-        .join(" ").toLowerCase().includes(q));
+    const hits = index ? S.search(index, q, 50)
+      : entries.filter((e) => [e.title, e.summary, e.category, ...(e.tags || [])].join(" ").toLowerCase().includes(q.toLowerCase()))
+               .map((e) => ({ entry: e, terms: [] }));
     $("#results").innerHTML = hits.length
-      ? `<ul class="entries">${hits.map((e) => entryHtml(e, true)).join("")}</ul>`
+      ? `<div class="rc">${hits.length} match${hits.length === 1 ? "" : "es"} · ↑↓ to move · enter to open</div><ul class="entries">${hits.map(resultHtml).join("")}</ul>`
       : '<div class="empty">No matches.</div>';
+    if (hits.length) setActive(0);
   }
   search.addEventListener("input", runSearch);
+  search.addEventListener("keydown", (ev) => {
+    if (ev.key === "ArrowDown") { ev.preventDefault(); setActive(active + 1); }
+    else if (ev.key === "ArrowUp") { ev.preventDefault(); setActive(active - 1); }
+    else if (ev.key === "Enter") {
+      const a = document.querySelectorAll("#results .entry a")[Math.max(active, 0)];
+      if (a) { ev.preventDefault(); window.location.href = a.getAttribute("href"); }
+    }
+  });
   document.addEventListener("keydown", (ev) => {
     if (ev.key === "/" && document.activeElement !== search) { ev.preventDefault(); search.focus(); }
     if (ev.key === "Escape") { search.value = ""; runSearch(); search.blur(); }

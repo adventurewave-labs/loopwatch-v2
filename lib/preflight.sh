@@ -9,21 +9,19 @@ pf_pass() { echo "PASS  $*"; }
 pf_warn() { echo "WARN  $*"; }
 pf_fail() { echo "FAIL  $*"; PF_FAILS=$((PF_FAILS + 1)); }
 
-# Optional live check of Vercel Deployment Protection. Needs VERCEL_TOKEN in the
-# environment (never stored by loopwatch) and VERCEL_PROJECT_ID (+ VERCEL_TEAM_ID) in the conf.
-vercel_protection_check() {
-  local url body
-  url="https://api.vercel.com/v9/projects/${VERCEL_PROJECT_ID}"
-  [[ -n "${VERCEL_TEAM_ID:-}" ]] && url="$url?teamId=$VERCEL_TEAM_ID"
-  if ! body="$(curl -fsS --max-time 15 -H "Authorization: Bearer $VERCEL_TOKEN" "$url" 2>/dev/null)"; then
-    pf_fail "could not read Vercel project $VERCEL_PROJECT_ID to confirm Deployment Protection (fail closed)"
-    return
-  fi
-  if jq -e '(.ssoProtection != null) or (.passwordProtection != null)' <<< "$body" >/dev/null 2>&1; then
-    pf_pass "Vercel project has Deployment Protection ($(jq -r '[(if .ssoProtection then "vercel-auth:" + (.ssoProtection.deploymentType // "?") else empty end), (if .passwordProtection then "password" else empty end)] | join(", ")' <<< "$body"))"
-  else
-    pf_fail "Vercel project $VERCEL_PROJECT_ID has NO Deployment Protection — catalog would be public"
-  fi
+# Live probe (host-agnostic): an unauthenticated GET of $SITE_URL/manifest.json must be
+# refused (401/403, or 503 from the catalog server while its credentials are unset).
+# A 200 means the catalog is public; no answer means we cannot tell. Both fail closed.
+site_protection_check() {
+  local url code
+  url="${SITE_URL%/}/manifest.json"
+  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$url" 2>/dev/null || true)"
+  case "$code" in
+    401|403) pf_pass "live check: $url refuses anonymous requests ($code)" ;;
+    503)     pf_warn "live check: $url is locked (503): the catalog server has no credentials yet, so it serves nothing" ;;
+    200)     pf_fail "live check: $url is PUBLIC (200 without credentials)" ;;
+    *)       pf_fail "live check: $url did not answer as protected (HTTP ${code:-none}), fail closed" ;;
+  esac
 }
 
 preflight() {
@@ -47,10 +45,10 @@ preflight() {
     pf_fail "SITE_VISIBILITY is '${SITE_VISIBILITY:-unset}', must be 'protected' (or set ALLOW_PUBLIC=true to publish publicly)"
   else
     pf_pass "SITE_VISIBILITY=protected"
-    if [[ -n "${VERCEL_PROJECT_ID:-}" && -n "${VERCEL_TOKEN:-}" ]]; then
-      vercel_protection_check
-    elif [[ -n "${VERCEL_PROJECT_ID:-}" ]]; then
-      pf_warn "VERCEL_TOKEN not in environment — protection of $VERCEL_PROJECT_ID declared, not verified live"
+    if [[ -n "${SITE_URL:-}" ]]; then
+      site_protection_check
+    else
+      pf_warn "SITE_URL not set: protection is declared, not verified live"
     fi
   fi
 

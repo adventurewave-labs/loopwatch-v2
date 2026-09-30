@@ -1,15 +1,17 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Opt-in only: rendered and loaded by `loopwatch schedule install`. Never installed by default. -->
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.marcuspatman.loopwatch</string>
+  <string>__LABEL__</string>
 
   <key>ProgramArguments</key>
   <array>
     <string>/bin/bash</string>
-    <string>-c</string>
-    <string>exec "__LOOPWATCH_DIR__/bin/loopwatch-run.sh"</string>
+    <string>__LOOPWATCH_DIR__/bin/loopwatch-run.sh</string>
+    <string>--target</string>
+    <string>nightly</string>
   </array>
 
   <key>EnvironmentVariables</key>
@@ -29,9 +31,9 @@
   </dict>
 
   <key>StandardOutPath</key>
-  <string>__LOOPWATCH_DIR__/state/logs/launchd.out.log</string>
+  <string>__STATE_DIR__/logs/launchd.out.log</string>
   <key>StandardErrorPath</key>
-  <string>__LOOPWATCH_DIR__/state/logs/launchd.err.log</string>
+  <string>__STATE_DIR__/logs/launchd.err.log</string>
 
   <key>RunAtLoad</key>
   <false/>
