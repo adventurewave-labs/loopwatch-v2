@@ -7,8 +7,8 @@
 # Env knobs:
 #   STUB_CALLS        file that gets one line per model invocation
 #   STUB_INPUTS       dir: each call's stdin is saved there as <stage>-<n>.txt
-#   STUB_PAGES        one (default) | none | unsafe | unsafe2 | client | category | two | paraphrase | malformed — what the writer returns
-#   STUB_TRIAGE       one (default) | none | garbage | traversal    — what triage returns
+#   STUB_PAGES        one (default) | none | unsafe | unsafe2 | client | category | two | paraphrase | malformed | grounding — what the writer returns
+#   STUB_TRIAGE       one (default) | none | garbage | traversal | dupid    — what triage returns
 #   STUB_TRIAGE_COST  cost the triage stage reports (default 0.03)
 #   STUB_FAIL         budget | budget0 | crash                       — simulate a failed call (budget0: error result, exit 0)
 #   STUB_MARKER       text planted in the persisted session transcript (self-ingestion test)
@@ -16,35 +16,54 @@
 set -u
 
 if [[ "${1:-}" == "--help" ]]; then
-  for f in ${STUB_HELP_FLAGS:---output-format --max-budget-usd --no-session-persistence --strict-mcp-config --json-schema --tools --system-prompt}; do
+  for f in ${STUB_HELP_FLAGS:---output-format --max-budget-usd --no-session-persistence --strict-mcp-config --json-schema --tools --system-prompt --fallback-model}; do
     echo "  $f    (stub)"
   done
   exit 0
 fi
 
-sys="" schema="" model="" persist=true budget="" tools="<unset>"
+sys="" schema="" model="" persist=true budget="" tools="<unset>" fbm=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -p) ;;
+    --version) echo "2.1.283 (Claude Code stub)"; exit 0 ;;
     --model) shift; model="$1" ;;
     --system-prompt) shift; sys="$1" ;;
     --json-schema) shift; schema="$1" ;;
     --tools) shift; tools="$1" ;;
     --no-session-persistence) persist=false ;;
     --max-budget-usd) shift; budget="$1" ;;
+    --fallback-model) shift; fbm="$1" ;;
     --output-format) shift ;;
   esac
   shift
 done
 input="$(cat)"
+# STUB_SLEEP holds the run lock long enough to race it; STUB_HOLD_LOG records each call's
+# [start, end] (ns) so a test can prove no two runs were ever inside the lock at once
+# (BSD date has no %N, so the clock is perl's Time::HiRes, present on stock macOS and Linux)
+hires() { perl -MTime::HiRes=time -e 'printf "%.0f\n", time * 1e9' 2>/dev/null || echo "$(date +%s)000000000"; }
+if [[ -n "${STUB_SLEEP:-}" ]]; then
+  [[ -z "${STUB_HOLD_LOG:-}" ]] || echo "$(hires) +1 $$" >> "$STUB_HOLD_LOG"
+  sleep "$STUB_SLEEP"
+  [[ -z "${STUB_HOLD_LOG:-}" ]] || echo "$(hires) -1 $$" >> "$STUB_HOLD_LOG"
+fi
 
 stage=extract
 if printf '%s' "$sys" | grep -q 'LOOPWATCH-STAGE: triage'; then stage=triage; fi
+# judge (test/eval/judge.sh): STUB_JUDGE=good (default) | low (faithfulness 2, a claim listed)
+if printf '%s' "$sys" | grep -q 'LOOPWATCH-STAGE: judge'; then
+  echo "call stage=judge model=$model budget=$budget tools=[$tools]" >> "${STUB_CALLS:-/dev/null}"
+  f=5; u='[]'; [[ "${STUB_JUDGE:-good}" == low ]] && { f=2; u='["invented kubectl flag"]'; }
+  jq -nc --argjson f "$f" --argjson u "$u" '{type:"result", subtype:"success", is_error:false, total_cost_usd:0.01,
+    structured_output:{faithfulness:$f, specificity:5, reusability:5, clarity:5, unsupported:$u, verdict:"stub verdict"}}'
+  exit 0
+fi
 has_bundle=no; printf '%s' "$input" | grep -q '<file path="bundle/' && has_bundle=yes
 has_excerpt=no; printf '%s' "$input" | grep -q '<excerpt id=' && has_excerpt=yes
 schema_ok=no; printf '%s' "$schema" | jq -e 'type == "object"' >/dev/null 2>&1 && schema_ok=yes
 if [[ -n "${STUB_SCHEMAS:-}" ]]; then mkdir -p "$STUB_SCHEMAS"; printf '%s' "$schema" > "$STUB_SCHEMAS/$( printf '%s' "$sys" | grep -q 'LOOPWATCH-STAGE: triage' && echo triage || echo extract).json"; fi
-echo "call stage=$stage model=$model persist=$persist budget=$budget tools=[$tools] schema=$schema_ok thinking=${MAX_THINKING_TOKENS:-unset} bundle=$has_bundle excerpts=$has_excerpt cwd=$PWD cwdfiles=$(ls -A | tr '\n' ',')" >> "${STUB_CALLS:-/dev/null}"
+echo "call stage=$stage model=$model fallback=[$fbm] persist=$persist budget=$budget tools=[$tools] schema=$schema_ok thinking=${MAX_THINKING_TOKENS:-unset} bundle=$has_bundle excerpts=$has_excerpt cwd=$PWD cwdfiles=$(ls -A | tr '\n' ',')" >> "${STUB_CALLS:-/dev/null}"
 if [[ -n "${STUB_INPUTS:-}" ]]; then
   mkdir -p "$STUB_INPUTS"
   n=$(( $(ls "$STUB_INPUTS" | wc -l) + 1 ))
@@ -61,17 +80,36 @@ if [[ "$persist" == "true" ]]; then
 fi
 
 result() {  # result <cost> <is_error> <subtype> <structured-json|null> [result-text]
-  jq -nc --argjson cost "$1" --argjson err "$2" --arg sub "$3" --argjson so "$4" --arg res "${5:-done}" --arg model "$model" '
+  jq -nc --argjson cost "$1" --argjson err "$2" --arg sub "$3" --argjson so "$4" --arg res "${5:-done}" --arg mu "$model_used" '
     {type:"result", subtype:$sub, is_error:$err, duration_ms:1234, num_turns:2, result:$res,
      structured_output:$so, total_cost_usd:$cost,
      usage:{input_tokens:1200, cache_creation_input_tokens:300, cache_read_input_tokens:5000, output_tokens:800},
-     modelUsage:{($model):{costUSD:$cost}}}'
+     modelUsage:{($mu):{costUSD:$cost}}}'
 }
+
+# STUB_OVERLOAD="<stage>:<n>[:<model>]" -> the first n calls of that stage (optionally only on
+# that model) fail like a real 529 overload; STUB_FAIL_STATE is the counter dir.
+# STUB_OVERLOAD_COST: what each overloaded attempt reports as spent (default 0).
+# STUB_MODEL_USED overrides the modelUsage key (emulates the CLI's in-call --fallback-model).
+if [[ -n "${STUB_OVERLOAD:-}" ]]; then
+  IFS=: read -r ov_stage ov_n ov_model <<< "$STUB_OVERLOAD"
+  if [[ "$ov_stage" == "$stage" && ( -z "$ov_model" || "$ov_model" == "$model" ) ]]; then
+    cnt_f="${STUB_FAIL_STATE:-/tmp}/overload-$stage"; c=$(( $(cat "$cnt_f" 2>/dev/null || echo 0) + 1 )); echo "$c" > "$cnt_f"
+    if [[ "$c" -le "$ov_n" ]]; then
+      jq -nc --argjson oc "${STUB_OVERLOAD_COST:-0}" '{type:"result", subtype:"success", is_error:true, duration_ms:900, num_turns:1, total_cost_usd:$oc,
+               result:"API Error: 529 {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}",
+               usage:{input_tokens:0, output_tokens:0}}'
+      exit 1
+    fi
+  fi
+fi
+[[ -n "${STUB_MODEL_USED:-}" ]] && model_used="$STUB_MODEL_USED" || model_used="$model"
 
 case "${STUB_FAIL:-}" in
   budget)  result 1.25 true error_max_budget_usd null; exit 1 ;;
   budget0) result 0.31 true error_max_budget_usd null; exit 0 ;;   # error result with exit 0
   crash)   echo "stub crash" >&2; exit 2 ;;
+  hangup)  printf '{"type":"result","subt'; echo "Error: socket hang up" >&2; exit 1 ;;   # died mid-stream
 esac
 
 if [[ "$stage" == "triage" ]]; then
@@ -87,11 +125,15 @@ if [[ "$stage" == "triage" ]]; then
       cands="$(jq -nc --arg f "${first:-bundle/transcripts/missing.txt}" '[{id:"c1", title:"Turbo-Flow ingest: CronJob + work queue",
         category:"infra/kubernetes", why:"architecture decision with tradeoffs",
         evidence:[{file:$f, start_line:2, end_line:3}, {file:"../../etc/passwd", start_line:1, end_line:5}]}]')" ;;
+    dupid)   # a valid c1 followed by an INVALID candidate that reuses id c1 (title too short)
+      cands="$(jq -nc --arg f "${first:-bundle/transcripts/missing.txt}" '[{id:"c1", title:"Turbo-Flow ingest: CronJob + work queue",
+        category:"infra/kubernetes", why:"architecture decision with tradeoffs", evidence:[{file:$f, start_line:2, end_line:3}]},
+        {id:"c1", title:"x", category:"ideas", why:"w", evidence:[{file:$f, start_line:1, end_line:2}]}]')" ;;
     traversal)
       cands='[{"id":"c1","title":"x","category":"ideas","why":"x","evidence":[{"file":"bundle/../../../etc/passwd","start_line":1,"end_line":9},{"file":"/etc/hosts","start_line":1,"end_line":9}]}]' ;;
   esac
   obj="$(jq -nc --arg d "$digest" --arg hl "${STUB_HIGHLIGHT:-}" --argjson c "$cands" \
-    '{digest_summary:$d, highlights:(["ingest architecture decided"] + (if $hl == "" then [] else [$hl] end)), candidates:$c}')"
+    '{digest_summary:$d, highlights:((["ingest architecture decided"] + (if $hl == "" then [] else [$hl] end)) | join("\n")), candidates:$c}')"
   result "${STUB_TRIAGE_COST:-0.03}" false success "$obj"
   exit 0
 fi
@@ -103,13 +145,24 @@ pg() {  # pg <slug> <title> [extra-body-html] [category]
     body_html: ("<h2>Decision</h2><p>CronJob + queue; worker must be idempotent.</p>" + $b)}'
 }
 p=""
-add() { p="${p:+$p,}$1"; }
+add() { p="${p:+$p,}${1//\{\}/}"; }
 case "${STUB_PAGES:-one}" in
   none) ;;
   malformed)    # one good page, one with a non-string body, one reusing the good slug
        add "$(pg k8s-cronjob-queue-ingest "Title ONE" "<p>BODY ONE</p>")"
        add '{"candidate_id":"c1","slug":"object-body-page","title":"x","category":"ideas","tags":[],"summary":"x","source":"x","body_html":{"x":1}}'
        add "$(pg k8s-cronjob-queue-ingest "Title TWO" "<p>BODY TWO</p>")" ;;
+  secretcode)   # a page whose invented code holds a secret: grounding logs its tokens before postscan drops it
+       add "$(pg leaky-env-page "Env setup for the ingest workers" '<pre><code>export ANTHROPIC_API_KEY=sk-ant-api03-{}AbCdEfGhIjKlMnOpQrStUvWx1234
+helm upgrade ingest ./charts/ingest --set queue.maxRetries=7</code></pre>')" ;;
+  grounding)    # one page whose code comes from the transcript, one that invents its commands
+       add "$(pg grounded-cronjob-page "CronJob pinned to spot with a PDB" '<pre><code>kubectl get cronjobs
+activeDeadlineSeconds: 600
+PodDisruptionBudget</code></pre>')"
+       add "$(pg invented-helm-page "Helm rollout for the ingest workers" '<pre><code>helm upgrade ingest ./charts/ingest --set queue.maxRetries=7
+kubectl rollout restart deploy/ingest-worker --grace-period=30
+export INGEST_QUEUE_URL=amqp://mq.internal:5672/ingest
+kubectl get cronjobs</code></pre>')" ;;
   paraphrase)   # same topic as "one" under a different slug, plus an unrelated page
        add "$(pg cronjob-work-queue-for-turbo-flow "Turbo-Flow ingest via K8s CronJob and a work queue")"
        add "$(pg spot-pool-pdb-batch "Spot node pool with a PDB for batch ingest")" ;;
@@ -124,7 +177,7 @@ case "${STUB_PAGES:-one}" in
     add "$(pg iframe-page "Iframe page" "<iframe src=\"about:blank\"></iframe>")"
     add "$(pg leaked-stripe-page "Stripe page" "<p>key sk_live_ABCDEFGHIJKLMNOPQRSTUVWX</p>")" ;;
   unsafe2)
-    add "$(pg safe-page-two "Safe page two" '<p>code: <code>&lt;img onerror=x&gt;</code> <a href="#x">local</a> <a href="../index.html">up</a> <img src="data:image/png;base64,AAAA"></p>')"
+    add "$(pg safe-page-two "Safe page two" '<p>code: <code>&lt;img onerror=x&gt;</code>, a &lt;script&gt; mention, 1 < 2 and b > a</p><table><tr><th>k</th><td>v</td></tr></table><br/>')"
     add "$(pg quoted-gt-page "Unsafe quoted-gt-page" '<img alt=">" onerror=alert(1) src=x>')"
     add "$(pg entity-js-page "Unsafe entity-js-page" '<a href="&#106;avascript:alert(1)">x</a>')"
     add "$(pg tab-js-page "Unsafe tab-js-page" '<a href="java&#9;script:alert(1)">x</a>')"

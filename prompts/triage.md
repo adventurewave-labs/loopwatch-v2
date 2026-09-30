@@ -32,7 +32,7 @@ Inputs are pre-scrubbed, and `[REDACTED:<kind>]` markers stand for removed secre
 ## Output (schema-enforced)
 
 - `digest_summary`: 2-4 sentences on what the day amounted to across projects. Peer voice, direct, no filler.
-- `highlights`: 3-6 short bullets of notable activity, including work below the page bar.
+- `highlights`: 3-6 short items of notable activity, including work below the page bar, as **one string with one item per line** (plain text, no bullets or tags).
 - `candidates`: 0-5 items, each with:
   - `id`: `c1`, `c2`, and so on
   - `title`
@@ -41,3 +41,11 @@ Inputs are pre-scrubbed, and `[REDACTED:<kind>]` markers stand for removed secre
   - `evidence`: 1-4 `{file, start_line, end_line}` ranges. `file` is exactly a `path` attribute you were given, and lines are 1-based and inclusive. Keep them tight and never cite a whole file.
 
 If nothing qualifies, return `"candidates": []` but still give an accurate digest and highlights.
+
+The answer is one JSON object of exactly this shape. Every string is a JSON string: escape `"` and `\` inside it, and never put markdown lists or XML-like tags inside the JSON.
+
+```json
+{"digest_summary": "…", "highlights": "first item\nsecond item\nthird item",
+ "candidates": [{"id": "c1", "title": "…", "category": "infra/kubernetes", "why": "…",
+                 "evidence": [{"file": "bundle/transcripts/claude-code-1.txt", "start_line": 12, "end_line": 30}]}]}
+```

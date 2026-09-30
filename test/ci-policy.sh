@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# CI supply-chain policy check (OpenSSF Scorecard-style baseline), dependency-free.
+#   test/ci-policy.sh [workflow files...]   (default: every workflow in this repo + the catalog template)
+# Rules, per workflow file:
+#   R1 every `uses:` is pinned to a full 40-hex commit SHA with a `# vX.Y.Z` comment (or is local ./)
+#   R2 a top-level `permissions:` block exists (least privilege by default), never write-all
+#   R3 every actions/checkout sets `persist-credentials: false` (no token left in .git/config)
+#   R4 no `pull_request_target` trigger and no attacker-controlled expressions
+#      (github.event.*, github.head_ref) anywhere: script-injection vectors
+#   R5 every job has `timeout-minutes` (count of runs-on == count of timeout-minutes)
+#   R6 `id-token: write` (OIDC signing) is never granted at the top level, only per job
+#   R7 a workflow that publishes a GitHub release also generates an SBOM and attests build
+#      provenance (actions/attest-build-provenance), so every release is verifiable
+set -uo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$HERE/.." && pwd)"
+if [[ $# -gt 0 ]]; then files=("$@"); else files=("$ROOT"/.github/workflows/*.yml "$ROOT"/catalog-template/.github/workflows/*.yml); fi
+bad=0
+n_files=0
+v() { echo "  VIOLATION ${1##*/}: $2"; bad=$((bad + 1)); }
+for f in "${files[@]}"; do
+  [[ -f "$f" ]] || continue
+  n_files=$((n_files + 1))
+  while IFS= read -r line; do
+    ref="$(sed -E 's/^[[:space:]]*-?[[:space:]]*uses:[[:space:]]*//' <<< "$line")"
+    [[ "$ref" == ./* ]] && continue
+    [[ "$ref" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@[0-9a-f]{40}[[:space:]]+#[[:space:]]*v[0-9] ]] || v "$f" "R1 unpinned action: $ref"
+  done < <(grep -E '^[[:space:]]*-?[[:space:]]*uses:' "$f")
+  grep -qE '^permissions:' "$f" || v "$f" "R2 no top-level permissions block"
+  grep -qE 'permissions:[[:space:]]*write-all' "$f" && v "$f" "R2 write-all permissions"
+  awk '/^[[:space:]]*#/ { next }
+       /uses:[[:space:]]*actions\/checkout@/ { pending = 1; seen = 0; n = 0; next }
+       pending { n++; if ($0 ~ /persist-credentials:[[:space:]]*false/) seen = 1
+                 if (n >= 3 || $0 ~ /^[[:space:]]*- /) { if (!seen) bad++; pending = 0 } }
+       END { if (pending && !seen) bad++; exit bad > 0 }' "$f" || v "$f" "R3 checkout without persist-credentials: false"
+  grep -qE '^[[:space:]]*pull_request_target:|pull_request_target' "$f" && v "$f" "R4 pull_request_target trigger"
+  grep -qE '\$\{\{[^}]*(github\.event\.|github\.head_ref)' "$f" && v "$f" "R4 attacker-controlled expression"
+  awk '/^permissions:.*id-token:[[:space:]]*write/ { found = 1 }
+       /^permissions:/ { top = 1; next } top && /^[^[:space:]#]/ { top = 0 }
+       top && /id-token:[[:space:]]*write/ { found = 1 } END { exit !found }' "$f" && v "$f" "R6 id-token: write granted at the top level"
+  if grep -qE 'gh release (create|upload)|softprops/action-gh-release' "$f"; then
+    grep -qE 'uses:[[:space:]]*actions/attest-build-provenance@' "$f" || v "$f" "R7 release without build-provenance attestation"
+    grep -vE '^[[:space:]]*#' "$f" | grep -qiE '(sbom|spdx|cyclonedx)[^[:space:]]*\.(json|xml)|loopwatch-sbom\.sh|anchore/sbom-action@|syft ' \
+      || v "$f" "R7 release without an SBOM"
+  fi
+  jobs="$(grep -cE '^[[:space:]]+runs-on:' "$f")"; to="$(grep -cE '^[[:space:]]+timeout-minutes:' "$f")"
+  [[ "$jobs" == "$to" ]] || v "$f" "R5 $jobs job(s) but $to timeout-minutes"
+done
+[[ "$n_files" -gt 0 ]] || { echo "FAIL — ci-policy: no workflow files found"; exit 1; }
+if [[ "$bad" -gt 0 ]]; then echo "FAIL — ci-policy: $bad violation(s)"; exit 1; fi
+echo "PASS — ci-policy (${#files[@]} workflow file(s): pinned SHAs, least privilege, no persisted creds, no injection vectors, timeouts, attested releases)"

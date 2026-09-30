@@ -37,6 +37,10 @@ MAX_CANDIDATES=5
 EXCERPT_MAX_KB=24            # per candidate
 EXCERPT_TOTAL_KB=80
 INCLUDE_TOOL_CALLS=true      # keep "[tool:Name] <command/path>" lines (results are always dropped)
+MONTHLY_BUDGET_USD="20.00"   # calendar-month cap across all runs (0 = off); a run that would exceed it is skipped, activity stays queued
+COST_ANOMALY_FACTOR=3        # flag (ledger + PR) a run costing >= 3x the rolling median
+FALLBACK_MODEL="haiku"       # writer falls back to this when MODEL is overloaded ("" = never)
+CLAUDE_RETRIES=2             # retries on transient failures (overload, 429/5xx, network); never on budget caps
 THINKING_TOKENS=0            # extended-thinking budget per call; 0 = off (most of the triage output cost when on)
 MAX_FILE_KB=120              # per-source delta cap after filtering
 MAX_BUNDLE_KB=300            # whole-bundle cap; oldest content is trimmed first
@@ -46,6 +50,15 @@ SKIP_EMPTY=true
 # Near-duplicate guard: a page whose title+summary token overlap (Jaccard, title weighted
 # double) with an existing catalog entry reaches this score is skipped. 0 = off.
 NEAR_DUP_THRESHOLD=0.55
+
+# Related pages: each new page gets a static "Related" list (BM25 over title, tags and summary)
+# linking up to RELATED_PAGES catalog pages that score at least RELATED_MIN_SCORE. 0 = off.
+RELATED_PAGES=3
+RELATED_MIN_SCORE=1.5
+
+# Retention: run logs, failure autopsies and the private copies of skipped pages older than
+# this many days are deleted at the start of each run (0 = keep forever). The ledger is kept.
+RETENTION_DAYS=30
 
 # ── Telemetry (optional) ─────────────────────────────────────────────────
 # Each run as an OTLP/JSON trace using the OpenTelemetry GenAI semantic conventions

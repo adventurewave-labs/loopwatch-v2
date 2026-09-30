@@ -55,23 +55,45 @@ html_problem() {
   jq -Rrs '
     def hexval: ascii_downcase | explode | reduce .[] as $c (0; . * 16 + (if $c >= 97 then $c - 87 else $c - 48 end));
     def decode:
-      gsub("&#[xX](?<h>[0-9a-fA-F]{1,6});?"; (.h | hexval | [.] | implode))
-      | gsub("&#(?<d>[0-9]{1,7});?"; (.d | tonumber | [.] | implode))
+      gsub("&#[xX]0*(?<h>[0-9a-fA-F]{1,6});?"; (.h | hexval | [.] | implode))
+      | gsub("&#0*(?<d>[0-9]{1,7});?"; (.d | tonumber | [.] | implode))
       | gsub("&(?i:colon);"; ":") | gsub("&(?i:sol);"; "/") | gsub("&(?i:tab);"; "\t") | gsub("&(?i:newline);"; "\n")
       | gsub("&(?i:lpar);"; "(") | gsub("&(?i:rpar);"; ")") | gsub("&(?i:period);"; ".") | gsub("&(?i:bsol);"; "\\\\")
       | gsub("&(?i:quot);"; "\"") | gsub("&(?i:apos);"; "\u0027") | gsub("&(?i:lt);"; "<") | gsub("&(?i:gt);"; ">") | gsub("&(?i:amp);"; "&");
-    def squash: gsub("[\t\n\r]"; "");
+    # CSS: comments vanish and \HH escapes are characters, so u/**/rl( and \75rl( are url(
+    def css: gsub("(?s)/\\*.*?\\*/"; "")
+             | gsub("\\\\(?<h>[0-9a-fA-F]{1,6})[ \t\n\r\f]?"; (.h | hexval | [.] | implode))
+             | gsub("\\\\(?<c>[^0-9a-fA-F\n])"; .c);
+    # browsers drop ASCII tab/LF/CR anywhere in a URL and trim C0 controls + spaces at the ends
+    def urlnorm: gsub("[\t\n\r]"; "") | sub("^[\u0000-\u0020]+"; "") | ascii_downcase;
+    def bad_url: urlnorm | test("^(https?:|[/\\\\]{2}|javascript:|vbscript:|data:(?!image/(png|gif|jpeg|webp);))");
+    # tokenise like a browser: attributes are split on the RAW tag, then each value is decoded
+    def tagname: (capture("^</?(?<n>[A-Za-z][^\\s/>]*)").n // "") | ascii_downcase;
+    def attrs: [ scan("[\\s/\"\u0027](?<n>[^\\s/>\"\u0027=]+)\\s*=\\s*(?<v>\"[^\"]*\"|\u0027[^\u0027]*\u0027|[^\\s>]+)")
+                 | {n: (.[0] | ascii_downcase), v: (.[1] | sub("^[\"\u0027]"; "") | sub("[\"\u0027]$"; "") | decode)} ];
     . as $raw
     | ($raw | decode) as $dec
-    | [ $raw | scan("<[A-Za-z!/?](?:\"[^\"]*\"|\u0027[^\u0027]*\u0027|[^\"\u0027>])*>") ] as $tags
-    | ($tags | map(decode | squash)) as $t
+    # tags tokenised like the HTML attribute grammar: a quote only opens a value right after
+    # "=", an unquoted value runs to whitespace or ">" (a stray quote is part of it), and a
+    # ">" inside a quoted value does not end the tag. Atomic groups keep it linear.
+    | [ $raw | scan("</?[A-Za-z](?>[^\\s/>]*)(?>[\\s/]*(?>[^\\s/>=]+)(?>\\s*=\\s*(?>\"[^\"]*\"|\u0027[^\u0027]*\u0027|[^\\s>]*))?)*[\\s/]*>|<[!?][^>]*>") | {name: tagname, attrs: attrs, dec: decode} ] as $tags
+    # quote-UNaware view as well: a stray quote (`<p x=y" onmouseover=…>`) makes the quote-aware
+    # scan miss the whole tag, while a browser treats that quote as part of an unquoted value
+    | [ $raw | scan("<[A-Za-z][^<>]*>") | decode ] as $rawspans
     | if ($raw | test("<\\s*script"; "i")) then "inline or external <script>"
-      elif ($t | any(test("^<(iframe|object|embed|frame|frameset|applet|base|form|link|portal|svg|math)[\\s/>]"; "i"))) then "embedding/linking element"
-      elif ($t | any(test("^<meta[^>]*http-equiv"; "i"))) then "meta http-equiv"
-      elif ($t | any(test("[\\s/\"\u0027]on[a-z]+\\s*="; "i"))) then "on* event handler"
-      elif ($t | any(test("[\\s/\"\u0027](src|href|srcset|action|formaction|poster|data|background|xlink:href|ping|cite|longdesc|lowsrc|dynsrc|manifest|codebase|archive)\\s*=\\s*[\"\u0027]?\\s*(https?:|//|\\\\\\\\|javascript:|vbscript:|data:(?!image/(png|gif|jpeg|webp);))"; "i")))
+      elif ($tags | any(.name | test("^(script|iframe|object|embed|frame|frameset|applet|base|form|link|portal|svg|math|isindex|keygen|template|noscript|xmp|video|audio|source|marquee|details|dialog|input|button|select|textarea)$")))
+        then "embedding/active element"
+      elif ($tags | any(.name == "meta" and (.attrs | any(.n == "http-equiv")))) then "meta http-equiv"
+      elif ($tags | any(.attrs | any(.n | startswith("on")))) or ($tags | any(.dec | test("[\\s/\"\u0027]on[a-z]+\\s*="; "i")))
+            or ($rawspans | any(test("[\\s/\"\u0027]on[a-z]+\\s*="; "i")))
+        then "on* event handler"
+      elif ($tags | any(.attrs | any(.n == "srcset" or .n == "srcdoc" or .n == "popovertarget"))) then "srcset/srcdoc/popover attribute"
+      elif ($tags | any(.attrs | any((.n | test("^(src|href|action|formaction|poster|data|background|xlink:href|ping|cite|longdesc|lowsrc|dynsrc|manifest|codebase|archive)$")) and (.v | bad_url))))
+          or ($rawspans | any(test("[\\s/\"\u0027](src|href|action|formaction|poster|data|background|xlink:href|ping|cite|codebase|archive)\\s*=\\s*[\"\u0027]?\\s*(" + ([ "javascript:", "vbscript:", "https:", "http:" ] | map(split("") | join("[\\t\\n\\r]*")) | join("|")) + "|//)"; "i")))
         then "external or scriptable URL in an attribute"
-      elif ($dec | test("url\\s*\\(|@import|expression\\s*\\("; "i")) then "CSS url()/@import/expression"
+      elif ((($dec | css) | test("url\\s*\\(|@import|expression\\s*\\(|image-set\\s*\\("; "i"))
+            or ($tags | any(.attrs | any(.n == "style" and (.v | css | test("url\\s*\\(|expression\\s*\\(|image-set\\s*\\("; "i"))))))
+        then "CSS url()/@import/expression"
       else empty end' "$1"
 }
 
@@ -170,6 +192,60 @@ near_dups() {
     ) | .out[] | @tsv' "$meta"
 }
 
+# add_related <meta-final>: a static "Related" list in each newly installed page, just above
+# its footer (plain links, no JS, so the page CSP stays script-free). Ranking is BM25 over the
+# catalog (existing entries + this run's pages): the new page's title, tags and summary are
+# the query; each document is its title and tags (weighted x2) plus its summary; k1=1.2,
+# b=0.75. Up to RELATED_PAGES (3; 0 = off) links above RELATED_MIN_SCORE (1.5). Hrefs are built
+# only from catalog paths shaped pages/<year>/<slug>.html and titles are HTML-escaped; the
+# page is re-validated afterwards and keeps its old form if the list would trip anything.
+# Older pages are immutable, so links point backwards (and across this run) only.
+add_related() {
+  local meta="$1" n="${RELATED_PAGES:-3}" min="${RELATED_MIN_SCORE:-1.5}" row slug path nav f
+  [[ "$n" =~ ^[0-9]+$ ]] || { log "WARN: RELATED_PAGES='$n' is not a whole number; using 3"; n=3; }
+  [[ "$n" -gt 0 ]] || return 0
+  [[ "$min" =~ ^[0-9]+(\.[0-9]+)?$ ]] || { log "WARN: RELATED_MIN_SCORE='$min' is not a number; using 1.5"; min=1.5; }
+  RELATED_LINKS=0
+  while IFS= read -r row; do
+    slug="$(jq -r '.slug' <<< "$row")"; path="$(jq -r '.path' <<< "$row")"; nav="$(jq -r '.nav' <<< "$row")"
+    f="$SITE_DIR/$path"
+    [[ -f "$f" ]] || continue
+    jq -Rrs --arg nav "$nav" 'sub("\n<footer>"; "\n" + $nav + "\n<footer>")' "$f" > "$f.rel"
+    if [[ -n "$(html_problem "$f.rel")" ]] || ! grep -qF "$nav" "$f.rel"; then
+      log "WARN: related list for $slug not added (failed re-validation)"; rm -f "$f.rel"; continue
+    fi
+    mv "$f.rel" "$f"
+    RELATED_LINKS=$(( RELATED_LINKS + $(grep -o '<li><a href=' <<< "$nav" | wc -l | tr -d ' ') ))
+  done < <(jq -r --slurpfile m "$MANIFEST" --argjson n "$n" --argjson min "$min" '
+    def stop: ["the","and","for","with","from","into","that","this","via","when","why","how",
+               "are","was","not","but","its","our","use","using","vs","per","one","two","all"];
+    def toks: ascii_downcase | [scan("[a-z0-9]+")] | map(select(length > 2))
+              | map(if (length > 3 and endswith("s") and (endswith("ss") | not)) then .[:-1] else . end)
+              | map(select(. as $t | stop | index($t) | not));
+    def terms: ((.title // "") | toks) as $t | (((.tags // []) | map(tostring) | join(" ")) | toks) as $g
+               | $t + $t + $g + $g + ((.summary // "") | toks);
+    def tf: reduce .[] as $w ({}; .[$w] += 1);
+    def safe_path: type == "string" and test("^pages/[0-9]{4}/[a-z0-9][a-z0-9-]*\\.html$");
+    ([$m[0].entries[], .pages[]] | map(select(.path | safe_path)) | map(. + {tf: (terms | tf), len: (terms | length)})) as $docs
+    | ($docs | length) as $N
+    | (if $N == 0 then 1 else ($docs | map(.len) | add) / $N end) as $avg
+    | (reduce ($docs[] | .tf | keys[]) as $w ({}; .[$w] += 1)) as $df
+    | .pages[] | . as $p | select(.path | safe_path)
+    | (terms | unique) as $q
+    | [ $docs[] | select(.slug != $p.slug) | . as $d
+        | {title, path,
+           score: ([ $q[] | . as $w | ($d.tf[$w] // 0) as $f | select($f > 0)
+                     | (((($N - $df[$w] + 0.5) / ($df[$w] + 0.5)) + 1) | log)
+                       * ($f * 2.2) / ($f + 1.2 * (0.25 + 0.75 * $d.len / $avg)) ] | add // 0)} ]
+    | map(select(.score >= $min)) | sort_by(-.score) | .[:$n]
+    | select(length > 0)
+    | {slug: $p.slug, path: $p.path,
+       nav: ("<nav><h2>Related</h2><ul>"
+         + (map("<li><a href=\"../" + (.path | ltrimstr("pages/") | @html) + "\">" + (.title | tostring | @html) + "</a></li>") | join(""))
+         + "</ul></nav>")} | @json' "$meta")
+  [[ "$RELATED_LINKS" -eq 0 ]] || log "related: $RELATED_LINKS link(s) added to new pages"
+}
+
 publish_run() {
   local meta="$1"
   local year installed=0 skipped=0
@@ -210,6 +286,7 @@ publish_run() {
       | map(select(.slug as $s | $keep | index($s)))
       | map(. + {path: ("pages/" + $year + "/" + .slug + ".html"), date: $date}))
   ' "$meta" > "$RUN_DIR/meta-final.json"
+  add_related "$RUN_DIR/meta-final.json"
 
   # digest (unique name if a same-day run already published one)
   local digest_name="$RUN_DATE"
