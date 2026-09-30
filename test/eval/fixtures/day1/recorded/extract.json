@@ -1,0 +1,63 @@
+{
+  "type": "result",
+  "subtype": "success",
+  "is_error": false,
+  "duration_ms": 14863,
+  "num_turns": 2,
+  "result": "{\"pages\":[{\"candidate_id\":\"c1\",\"slug\":\"headless-claude-self-ingestion-loop-fix\",\"title\":\"Nightly headless Claude self-ingestion loop: root cause and three-layer fix\",\"category\":\"debugging\",\"tags\":[\"claude-code\",\"headless\",\"cost\",\"session-persistence\",\"macos\",\"bash\"],\"summary\":\"Headless claude -p runs were auto-persisting full transcripts under ~/.claude/projects/<encoded-cwd>/, so the next night's collector glob re-ingested the prior night's input and cost compounded. Documents the three-layer fix, the --max-budget-usd fail-closed semantics, and a macOS /var symlink gotcha.\",\"source\":\"claude-code:turbo-rig\",\"body_html\":\"<h2>Problem</h2><p>Nightly loop cost kept climbing even with minimal new work. Root cause: every headless <code>claude -p</code> invocation persists its own session transcript under <code>~/.claude/projects/&lt;encoded cwd&gt;/</code>, keyed by an encoding of the working directory. The loop ran from <code>$TMPDIR/loopwatch.XXXXXX</code>, a fresh temp dir each night, so each run created a new project dir (e.g. <code>-private-var-folders-...-T-loopwatch-a1B2c3</code>) containing the entire input bundle it was fed &mdash; a one-word test answer produced a 231 KB transcript. The collector's glob <code>~/.claude/projects/*/*.jsonl</code> then picked up that transcript the following night, so night N+1 re-ingested night N's input: cost compounded and stale content got re-mined indefinitely.</p><h2>Fix: three layers</h2><ol><li><strong>CLI flag</strong>: pass <code>--no-session-persistence</code>. Verified on claude 2.1.283 that no project dir is created at all when set.</li><li><strong>Fixed run directory</strong>: always run from a stable path, <code>~/.local/state/loopwatch/run</code>, instead of a fresh temp dir per run. Exclude its corresponding encoded project dir from collection (every non-alphanumeric char in the path becomes <code>-</code>), plus any dir suffixed <code>-loopwatch-run</code>, and the older v0.1 <code>loopwatch-XXXXXX</code> mktemp-style dirs, for backward compatibility. Tradeoff: a fixed run dir means runs must be serialized &mdash; acceptable here because the existing mkdir-based lock already enforces that.</li><li><strong>Watermark filtering</strong>: as a last-resort net, drop any transcript line whose <code>cwd</code> field equals the run dir. This catches the case where the project dir gets moved or renamed and layer 2's name-based exclusion misses it.</li></ol><h2>Budget enforcement semantics</h2><p><code>--max-budget-usd</code> is actively enforced mid-call: a cap of 0.05 on a call that would have cost 0.066 returned <code>is_error:true</code> with exit code 1 (the call did not silently truncate or downgrade). Decision: treat a budget hit as a <strong>failed run</strong>, not a partial success &mdash; hold watermarks at their prior value and record a ledger row with <code>skipped_reason=budget_exceeded</code>. Advancing watermarks on a budget-killed run would permanently lose the un-ingested delta; failing closed lets the same delta retry next run.</p><h2>Verification</h2><pre><code>claude -p 'Reply with exactly: ok' --model haiku --output-format json --no-session-persistence</code></pre><p>Confirmed no project directory appears under <code>~/.claude/projects/</code> after this call.</p><h2>Gotchas</h2><ul><li>On macOS, <code>/var</code> is a symlink to <code>/private/var</code>, so the encoded project-dir name computed from a logical path can differ from what actually gets created on disk. This is why the exclusion logic matches on a directory-name <em>suffix</em> pattern rather than an exact computed encoding.</li><li>A one-word response can still produce a six-figure-byte transcript, because the full input bundle is embedded in the persisted session, not just the reply.</li></ul>\"}]}",
+  "structured_output": {
+    "pages": [
+      {
+        "candidate_id": "c1",
+        "slug": "headless-claude-self-ingestion-loop-fix",
+        "title": "Nightly headless Claude self-ingestion loop: root cause and three-layer fix",
+        "category": "debugging",
+        "tags": [
+          "claude-code",
+          "headless",
+          "cost",
+          "session-persistence",
+          "macos",
+          "bash"
+        ],
+        "summary": "Headless claude -p runs were auto-persisting full transcripts under ~/.claude/projects/<encoded-cwd>/, so the next night's collector glob re-ingested the prior night's input and cost compounded. Documents the three-layer fix, the --max-budget-usd fail-closed semantics, and a macOS /var symlink gotcha.",
+        "source": "claude-code:turbo-rig",
+        "body_html": "<h2>Problem</h2><p>Nightly loop cost kept climbing even with minimal new work. Root cause: every headless <code>claude -p</code> invocation persists its own session transcript under <code>~/.claude/projects/&lt;encoded cwd&gt;/</code>, keyed by an encoding of the working directory. The loop ran from <code>$TMPDIR/loopwatch.XXXXXX</code>, a fresh temp dir each night, so each run created a new project dir (e.g. <code>-private-var-folders-...-T-loopwatch-a1B2c3</code>) containing the entire input bundle it was fed &mdash; a one-word test answer produced a 231 KB transcript. The collector's glob <code>~/.claude/projects/*/*.jsonl</code> then picked up that transcript the following night, so night N+1 re-ingested night N's input: cost compounded and stale content got re-mined indefinitely.</p><h2>Fix: three layers</h2><ol><li><strong>CLI flag</strong>: pass <code>--no-session-persistence</code>. Verified on claude 2.1.283 that no project dir is created at all when set.</li><li><strong>Fixed run directory</strong>: always run from a stable path, <code>~/.local/state/loopwatch/run</code>, instead of a fresh temp dir per run. Exclude its corresponding encoded project dir from collection (every non-alphanumeric char in the path becomes <code>-</code>), plus any dir suffixed <code>-loopwatch-run</code>, and the older v0.1 <code>loopwatch-XXXXXX</code> mktemp-style dirs, for backward compatibility. Tradeoff: a fixed run dir means runs must be serialized &mdash; acceptable here because the existing mkdir-based lock already enforces that.</li><li><strong>Watermark filtering</strong>: as a last-resort net, drop any transcript line whose <code>cwd</code> field equals the run dir. This catches the case where the project dir gets moved or renamed and layer 2's name-based exclusion misses it.</li></ol><h2>Budget enforcement semantics</h2><p><code>--max-budget-usd</code> is actively enforced mid-call: a cap of 0.05 on a call that would have cost 0.066 returned <code>is_error:true</code> with exit code 1 (the call did not silently truncate or downgrade). Decision: treat a budget hit as a <strong>failed run</strong>, not a partial success &mdash; hold watermarks at their prior value and record a ledger row with <code>skipped_reason=budget_exceeded</code>. Advancing watermarks on a budget-killed run would permanently lose the un-ingested delta; failing closed lets the same delta retry next run.</p><h2>Verification</h2><pre><code>claude -p 'Reply with exactly: ok' --model haiku --output-format json --no-session-persistence</code></pre><p>Confirmed no project directory appears under <code>~/.claude/projects/</code> after this call.</p><h2>Gotchas</h2><ul><li>On macOS, <code>/var</code> is a symlink to <code>/private/var</code>, so the encoded project-dir name computed from a logical path can differ from what actually gets created on disk. This is why the exclusion logic matches on a directory-name <em>suffix</em> pattern rather than an exact computed encoding.</li><li>A one-word response can still produce a six-figure-byte transcript, because the full input bundle is embedded in the persisted session, not just the reply.</li></ul>"
+      }
+    ]
+  },
+  "total_cost_usd": 0.029697,
+  "usage": {
+    "input_tokens": 2,
+    "cache_creation_input_tokens": 2495,
+    "cache_read_input_tokens": 14175,
+    "output_tokens": 1498,
+    "output_tokens_details": {
+      "thinking_tokens": 0
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 2495,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 1498,
+        "cache_read_input_tokens": 14175,
+        "cache_creation_input_tokens": 2495,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 2495
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  }
+}

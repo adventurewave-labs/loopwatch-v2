@@ -46,6 +46,7 @@ From a Claude Code or Cowork session, just ask: *"run loopwatch"*. That runs `lo
 | `loopwatch sources` | every candidate source with `include` / `skip:self` / `skip:not-allowlisted` |
 | `loopwatch preflight` | PASS/WARN/FAIL checks. Exits non-zero on any FAIL |
 | `loopwatch ledger [N]` | last N runs, plus totals and the median cost of runs that made model calls |
+| `loopwatch doctor` | health at a glance, one OK/WARN/FAIL line each: config, `redact.list` mode, dependencies, the last run and its age, the privacy self-test over the last 14 runs, monthly spend against the cap, cost anomalies, prompt drift since the last run, whether the eval golden matches the current prompts, and the CI policy. Exits 1 on any FAIL, so it can gate a cron or a status bar |
 | `loopwatch discover` | read-only report on this machine's transcript paths and schema (Phase 0) |
 | `loopwatch schedule install [HH MM] \| remove \| print` | opt-in nightly launchd job |
 | `loopwatch setup` / `update` / `version` | |
@@ -54,15 +55,19 @@ From a Claude Code or Cowork session, just ask: *"run loopwatch"*. That runs `lo
 
 - **Zero calls on quiet days.** A run stops before any model call if the new content (headers excluded) is under `ACTIVITY_MIN_BYTES` (default 2000, provisional). Transcripts from loopwatch's own runs never count toward it.
 - **Hard caps.** `MAX_BUNDLE_KB` caps the whole bundle (oldest content is trimmed first, and the trim is logged). `BUDGET_USD` caps each run. It is passed to every call as `--max-budget-usd`: triage gets `min(TRIAGE_BUDGET_USD, BUDGET_USD)`, and the writer gets what's left. A call that hits its cap fails the run **closed**: watermarks are held and the ledger records `skipped_reason: budget_exceeded`.
-- **Two tiers.** Haiku triages everything. Sonnet runs only when triage found candidates, and reads only the cited line ranges.
+- **Two tiers, one call each.** Haiku triages everything. Sonnet runs only when triage found candidates, and gets only the cited line ranges. Both calls are tool-free (`--tools ""`), schema-constrained (`--json-schema`, with triage evidence pinned to the run's real file paths), and run with extended thinking off (`THINKING_TOKENS=0`).
 - **Visible.** Every run appends one JSON line to `~/.local/state/loopwatch/runs.jsonl`. It uses Turbo Rig's field names (`ts, repo, target, model, in, cached, out, cost_usd, duration_ms`) plus `pages, skipped_reason, status, stages[], bundle_bytes, trimmed_bytes, validator_drops, postscan_drops`. The file is separate from `gate-log.jsonl`, so gate-verdict stats stay clean.
+- **Near-duplicate guard.** Slug dedup only catches exact repeats, so each new page's title and summary are also compared (token Jaccard, title weighted double) with every catalog entry and with pages kept earlier in the run. A page at or above `NEAR_DUP_THRESHOLD` (0.55, 0 = off) is skipped and counted as `near_dup_drops`.
+- **Related pages.** Each new page gets a static "Related" list above its footer: up to `RELATED_PAGES` (3, 0 = off) catalog pages ranked by BM25 over title, tags and summary, at or above `RELATED_MIN_SCORE` (1.5). Plain links, no JavaScript; titles are escaped, only `pages/<year>/<slug>.html` paths are linked, and the page is re-validated after the list is added.
+- **OpenTelemetry (optional).** Set `OTEL_EXPORT_DIR` and/or `OTEL_EXPORTER_OTLP_ENDPOINT` (+ `OTEL_EXPORTER_OTLP_HEADERS`) and each run is also exported as an OTLP/JSON trace that follows the GenAI semantic conventions: a `loopwatch run` root span plus one `chat <model>` client span per stage, with `gen_ai.request.model`, `gen_ai.usage.input_tokens` / `output_tokens` / `cache_read.input_tokens` and `loopwatch.cost_usd`. Spans carry counts and costs only, never content. A collector error only logs a warning.
+- **Structured logs.** Besides the readable log, every run writes `logs/<run_id>.jsonl`: one JSON line per event with `ts`, `level` (info/warn/error), `run_id`, `trace_id` and `msg`. `LOG_FORMAT=json` prints the same lines on stderr. With OpenTelemetry on, they are also exported as OTLP logs (`<run_id>.otlp-logs.json`, `POST /v1/logs`) on the run's trace, so a backend shows each span with its log lines.
 
-Measured on claude 2.1.283 (dry runs, not a monthly average): a no-page day cost **$0.054** (Haiku only). A one-page day cost **$0.376** ($0.058 Haiku + $0.318 Sonnet). Each `claude -p` call has a fixed floor of about $0.013–0.018.
+Measured on claude 2.1.283, on the same sample day (dry runs, not a monthly average). Structured mode: a **3-page day cost $0.158** in 69s ($0.057 Haiku + $0.101 Sonnet). The earlier agentic mode, with tool reads and a model-written HTML file, produced **1 page for $0.376**. That is about 83% less per page. Each `claude -p` call has a fixed floor of about $0.013–0.018.
 
 ## Privacy is enforced, not advised
 
 - **Allowlist.** Only sources matching `INCLUDE_PROJECTS` are read, and an empty list reads nothing, GitHub included. Patterns match the dir name (`*-src-turbo-flow`) or `label:name` (`cowork:*`, `github:marcuspat/*`). `EXCLUDE_PROJECTS` wins. The catalog repo is always excluded from GitHub collection, so loopwatch never re-reads its own output.
-- **Model isolation.** Headless calls get `--disallowedTools` rules that deny Read/Grep/Glob on `~/.claude`, `~/Library`, `~/.config` (your `redact.list`), `~/.ssh`/`.aws`/`.gnupg`, and loopwatch's private state (the redaction rules, the held bundle, autopsies, logs). This matters because Claude Code's Read reaches outside the working directory; path deny rules were verified to block Read, Grep and Glob on 2.1.283.
+- **Model isolation.** Neither model call gets any tool (`--tools ""`), so the model cannot read or write files. It sees only what loopwatch puts on stdin: the scrubbed bundle for triage, and only the cited excerpts for the writer. All collected data is fenced in `<file>`/`<excerpt>` tags that the system prompt defines as data, never instructions (spotlighting), and a fence tag inside the data is neutralized so content cannot close it. Page HTML is rendered by loopwatch from the returned body, then validated.
 - **Scrub before the model.** Built-in patterns cover OpenAI/Anthropic `sk-` keys, Stripe `sk_/rk_/pk_ live/test`, GitHub tokens, AWS, Slack, Google `AIza`, JWTs, PEM headers, bearer tokens, `scheme://user:pass@` connection strings, `password=`/`token:`/`api_key=` assignments, and emails. On top of those, every line of your gitignored `redact.list` is applied, case-insensitive, with an optional `=>replacement`.
 - **Scan after the model.** Pages, titles, summaries, tags, slugs and the digest are re-scanned with the same rules. Any hit drops the page, or withholds the digest text. The drop is counted in the ledger without the matched text.
 - **Page firewall.** The validator reads real tags (a quoted `>` does not end a tag), decodes character references, and strips tab/CR/LF before matching. It drops any page with `<script`, `on*=` handlers, `iframe/object/embed/form/link/base/svg/math`, `<meta http-equiv>`, an external/`javascript:`/`data:` (non-image) URL in `src`/`href`/`srcset`/`action`/`poster`/…, or any CSS `url()`/`@import`/`expression()`. The catalog's CSP (`script-src 'self'`) is a second layer.
@@ -79,7 +84,7 @@ The catalog is a separate private repo (`CATALOG_REPO`, default `marcuspat/loopw
 
 ## Correctness
 
-- Transcripts are watermarked by byte offset. The watermark stops at the **last newline**, so a session still being written never loses its tail. A file that shrank is re-read from 0. The first sighting of a file only mines it if it was touched in the last `FIRST_RUN_LOOKBACK_HOURS` (48).
+- Transcripts are watermarked by byte offset. The watermark stops at the **last newline**, so a session still being written never loses its tail. A file that shrank is re-read from 0, and so is one that was rotated or rewritten past its old offset: each offset carries a fingerprint of the file's first bytes (up to 1 KB), and a mismatch means the file was replaced. `test/prop/watermarks.sh` checks the invariant with random append, partial-line, truncate, rotate and failed-run sequences: every line complete at a committed run is delivered exactly once. The first sighting of a file only mines it if it was touched in the last `FIRST_RUN_LOOKBACK_HOURS` (48).
 - **No self-ingestion.** Headless calls use `--no-session-persistence` and always run from `~/.local/state/loopwatch/run`. That project dir, and v0.1's `loopwatch-XXXXXX` temp dirs, are excluded, and lines whose `cwd` is the run dir are dropped. See `docs/revival-notes.md` for the experiment that confirmed the bug.
 - A mkdir lock serializes runs. It records its PID, and a lock whose process is gone (or older than `LOCK_STALE_HOURS`) is reclaimed, so a crash can't silently stop later runs. A run that finds a live lock writes a `skipped_reason: locked` ledger row.
 - A result the CLI flags as an error (`is_error: true`) fails the run, even when `claude` exits 0.
@@ -107,6 +112,7 @@ lib/catalog.sh           catalog clone, branch, push, PR
 lib/preflight.sh         privacy/visibility checks
 lib/export.sh            --export-md, EXPORT_DIGEST_TO
 lib/common.sh            claude runner (flag detection, JSON usage), ledger
+lib/otel.sh              optional OTLP/JSON export (GenAI semantic conventions)
 prompts/triage.md        Stage A: the value bar and candidate contract
 prompts/extract.md       Stage B: page contract
 site/                    catalog UI seed (index.html, app.js, manifest.json)
@@ -121,7 +127,7 @@ docs/                    PRD-v0.2, revival notes, manifest schema, v0.1 PRD
 test/smoke-test.sh   # no network, no real model, no real transcripts, ~30s
 ```
 
-CI runs the smoke suite on ubuntu, and on macOS under `/bin/bash`. That is stock 3.2.57, the same bash launchd uses, with the BSD userland. It also runs `shellcheck -S error`. CI runs on every push and PR, and weekly. `bin/ship.sh [patch|minor|major]` runs the tests, bumps `VERSION`, tags, and pushes. `release.yml` gates the GitHub release on the same suite.
+CI runs the smoke suite on ubuntu, and on macOS under `/bin/bash`. That is stock 3.2.57, the same bash launchd uses, with the BSD userland. It also runs `shellcheck -S error`. CI runs on every push and PR, and weekly. `bin/ship.sh [patch|minor|major]` runs the tests, bumps `VERSION`, tags, and pushes. `release.yml` gates the GitHub release on the same suite. Each release ships a reproducible tarball, an SPDX 2.3 SBOM (`bin/loopwatch-sbom.sh`: every file with SHA1/SHA256, the runtime requirements, the pinned build actions) and `SHA256SUMS`. The tarball and SBOM carry a signed SLSA build-provenance attestation, which you can check with `gh attestation verify loopwatch-vX.Y.Z.tar.gz -R adventurewave-labs/loopwatch-v2`.
 
 ## Not in v0.2
 

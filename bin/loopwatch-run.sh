@@ -13,6 +13,8 @@ if [[ ! -f "$CONF" ]]; then
   echo "FATAL: no config at $CONF — run: mkdir -p \"$CONFIG_HOME\" && cp \"$ROOT_DIR/loopwatch.conf.example\" \"$CONF\"" >&2
   exit 1
 fi
+# OTel export is opt-in from the conf only: ignore OTEL_* the user exports for other tools
+unset OTEL_EXPORT_DIR OTEL_EXPORTER_OTLP_ENDPOINT OTEL_EXPORTER_OTLP_HEADERS
 # shellcheck disable=SC1090
 source "$CONF"
 
@@ -20,9 +22,12 @@ source "$CONF"
 : "${STATE_DIR:=${XDG_STATE_HOME:-$HOME/.local/state}/loopwatch}"
 : "${CLAUDE_BIN:=claude}"
 : "${MODEL:=sonnet}"                    # stage B (writing)
-: "${MAX_TURNS:=50}"
 : "${TRIAGE_MODEL:=haiku}"             # stage A (triage)
-: "${TRIAGE_MAX_TURNS:=30}"
+: "${FALLBACK_MODEL:=haiku}"           # writer fallback when MODEL is overloaded ("" = none)
+: "${TRIAGE_FALLBACK_MODEL:=}"         # triage fallback (default none: haiku is already the cheapest)
+: "${CLAUDE_RETRIES:=2}"               # extra attempts on transient API/network failures
+: "${CLAUDE_RETRY_BASE_S:=15}"         # backoff base seconds (doubles each retry, plus jitter)
+: "${THINKING_TOKENS:=0}"
 : "${TRIAGE_BUDGET_USD:=0.30}"
 : "${MAX_CANDIDATES:=5}"
 : "${EXCERPT_MAX_KB:=24}"
@@ -43,6 +48,17 @@ source "$CONF"
 : "${GITHUB_AUTHOR:=}"
 : "${EXPORT_MD_DIR:=}"
 : "${EXPORT_DIGEST_TO:=}"
+: "${NEAR_DUP_THRESHOLD:=0.55}"
+: "${RELATED_PAGES:=3}"
+: "${RELATED_MIN_SCORE:=1.5}"
+: "${MONTHLY_BUDGET_USD:=20.00}"         # calendar-month cap across runs (0 = off); fails closed, activity stays queued
+: "${COST_ANOMALY_FACTOR:=3}"           # flag a run costing >= this x the rolling median
+: "${RETENTION_DAYS:=30}"              # prune logs/autopsies/private page copies older than this (0 = keep)
+: "${GROUNDING:=on}"                   # code-token groundedness guard (on|off)
+: "${GROUNDING_DROP_MIN:=4}"           # drop a page with >= this many unsupported code tokens (and >= half)
+: "${OTEL_EXPORT_DIR:=}"
+: "${OTEL_EXPORTER_OTLP_ENDPOINT:=}"
+: "${OTEL_EXPORTER_OTLP_HEADERS:=}"
 # default scopes only when the conf does not mention GITHUB_SCOPES at all;
 # GITHUB_SCOPES=() in the conf turns the GitHub source off
 if ! declare -p GITHUB_SCOPES >/dev/null 2>&1; then
@@ -79,9 +95,15 @@ RUN_DIR="$STATE_DIR/run"
 LEDGER="${LEDGER:-$STATE_DIR/runs.jsonl}"
 mkdir -p "$STATE_DIR/logs" "$STATE_DIR/failed"
 LOG="$STATE_DIR/logs/$RUN_TS.log"
+LOG_JSONL="$STATE_DIR/logs/$RUN_TS.jsonl"
 
 # shellcheck disable=SC1091
 source "$ROOT_DIR/lib/common.sh"
+# shellcheck disable=SC1091
+source "$ROOT_DIR/lib/otel.sh"
+# one trace per run: OTel spans and every structured log line (LOG_JSONL) carry these ids
+RUN_TRACE_ID="$(otel_hex 16)"; RUN_ROOT_SPAN="$(otel_hex 8)"
+PROMPT_VERSION="$(prompt_version "$ROOT_DIR")"
 
 # dependency preflight
 for dep in jq git; do
@@ -135,16 +157,40 @@ USAGE_FILE=/dev/null
 LEDGER_DONE=false
 take_lock() {
   if mkdir "$LOCK" 2>/dev/null; then echo "$$" > "$LOCK/pid"; return 0; fi
-  local pid age
-  pid="$(cat "$LOCK/pid" 2>/dev/null || true)"
-  age=$(( $(now_epoch) - $(file_mtime "$LOCK") ))
-  if { [[ -n "$pid" ]] && ! kill -0 "$pid" 2>/dev/null; } || [[ "$age" -gt $(( LOCK_STALE_HOURS * 3600 )) ]] \
-     || { [[ -z "$pid" ]] && [[ "$age" -gt 60 ]]; }; then
-    log "reclaiming stale lock (pid ${pid:-none}, ${age}s old)"
-    rm -rf "$LOCK"
-    if mkdir "$LOCK" 2>/dev/null; then echo "$$" > "$LOCK/pid"; return 0; fi
+  lock_stale || return 1
+  # Reclaiming is itself a race: several runs can see the same stale lock at once, and a
+  # plain "rm -rf; mkdir" lets a late one delete the lock an early one just re-took (found
+  # by the lock-race test: 4 of 6 racers ran). So only the holder of a second mkdir lock
+  # may reclaim, and it re-checks staleness first. A reclaim lock older than 60s is from a
+  # run that died mid-reclaim and is cleared.
+  local r="$LOCK.reclaim"
+  if ! mkdir "$r" 2>/dev/null; then
+    [[ $(( $(now_epoch) - $(file_mtime "$r" 2>/dev/null || now_epoch) )) -gt 60 ]] && rm -rf "$r"
+    return 1
   fi
+  if lock_stale; then
+    log "reclaiming stale lock (pid ${LOCK_STALE_PID:-none}, ${LOCK_STALE_AGE}s old)"
+    rm -rf "$LOCK"
+    if mkdir "$LOCK" 2>/dev/null; then echo "$$" > "$LOCK/pid"; rmdir "$r" 2>/dev/null || true; return 0; fi
+  fi
+  rmdir "$r" 2>/dev/null || true
   return 1
+}
+# lock_stale: 0 if the lock's holder is gone (dead PID), it is older than LOCK_STALE_HOURS, or
+# it has had no PID for over 60s (a run that died between mkdir and writing its PID)
+lock_stale() {
+  [[ -d "$LOCK" ]] || return 1
+  LOCK_STALE_PID="$(cat "$LOCK/pid" 2>/dev/null || true)"
+  LOCK_STALE_AGE=$(( $(now_epoch) - $(file_mtime "$LOCK" 2>/dev/null || now_epoch) ))
+  { [[ -n "$LOCK_STALE_PID" ]] && ! kill -0 "$LOCK_STALE_PID" 2>/dev/null; } \
+    || [[ "$LOCK_STALE_AGE" -gt $(( LOCK_STALE_HOURS * 3600 )) ]] \
+    || { [[ -z "$LOCK_STALE_PID" ]] && [[ "$LOCK_STALE_AGE" -gt 60 ]]; }
+}
+# release_lock: only the run whose PID is in the lock removes it; a run whose lock was
+# reclaimed after LOCK_STALE_HOURS must not delete the new holder's lock on its way out
+release_lock() {
+  [[ "$(cat "$LOCK/pid" 2>/dev/null || true)" == "$$" ]] || return 0
+  rm -rf "$LOCK" 2>/dev/null || true
 }
 if ! take_lock; then
   log "lock held by a live run ($LOCK) — exiting"
@@ -162,10 +208,11 @@ on_exit() {
     autopsy
     finish failed "${DIE_REASON:-error}" 0
   fi
-  rm -rf "$LOCK" 2>/dev/null || true
+  release_lock
 }
 trap 'on_exit $?' EXIT
 
+retention_prune
 rm -rf "$RUN_DIR"
 mkdir -p "$RUN_DIR/bundle/transcripts" "$RUN_DIR/bundle/git" "$RUN_DIR/pages"
 : > "$RUN_DIR/usage.jsonl"
@@ -175,10 +222,13 @@ BUNDLE_BYTES=0
 TRIMMED_BYTES=0
 POSTSCAN_DROPS=0
 VALIDATOR_DROPS=0
+NEAR_DUP_DROPS=0
+RELATED_LINKS=0
+GROUNDING_DROPS=0
+UNGROUNDED_TOKENS=0
 STAGE_B_SKIP=""
 
 autopsy() {
-  restore_bundle 2>/dev/null || true
   cp -R "$RUN_DIR" "$STATE_DIR/failed/$RUN_TS" 2>/dev/null || true
   log "autopsy saved: $STATE_DIR/failed/$RUN_TS"
   # keep the 5 most recent autopsies
@@ -210,7 +260,13 @@ build_rules
 ensure_catalog
 
 log "collecting deltas -> $RUN_DIR"
+canary_init
 collect_all
+n_bundle="$(find "$RUN_DIR/bundle/transcripts" "$RUN_DIR/bundle/git" -type f 2>/dev/null | wc -l | tr -d ' ')"
+if ! why="$(canary_verify "$n_bundle")"; then
+  DIE_REASON=canary_leak; die "privacy self-test failed after collection: $why (nothing sent to a model)"
+fi
+CANARY_STATUS=ok
 log "bundle: $((BUNDLE_BYTES / 1024))KB (cap ${MAX_BUNDLE_KB}KB, trimmed ${TRIMMED_BYTES}B), activity $(activity_bytes)B"
 
 if [[ "$SKIP_EMPTY" == "true" ]] && ! has_activity; then
@@ -222,7 +278,16 @@ if [[ "$SKIP_EMPTY" == "true" ]] && ! has_activity; then
   exit 0
 fi
 
+cost_guard
 run_extraction
+RUN_COST="$(jq -s 'map(.cost_usd) | add // 0' "$RUN_DIR/usage.jsonl")"
+COST_ANOMALY_MEDIAN="$(cost_anomaly "$RUN_COST")"
+if [[ -n "$COST_ANOMALY_MEDIAN" ]]; then
+  log "WARN: cost anomaly: this run cost \$$RUN_COST, >= ${COST_ANOMALY_FACTOR:-3}x the rolling median \$$COST_ANOMALY_MEDIAN"
+fi
+if ! why="$(canary_verify 0)"; then
+  DIE_REASON=canary_leak; die "privacy self-test failed after extraction: $why"
+fi
 
 META="$RUN_DIR/run-meta.json"
 validate_meta "$META"
