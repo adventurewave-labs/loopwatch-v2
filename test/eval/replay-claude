@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Replay CLI for the offline eval: answers each stage with a RECORDED real model result
+# ($REPLAY_DIR/<stage>.json). --help advertises the structured-mode flags. Also saves each
+# call's stdin and schema to $REPLAY_OUT for assertions.
+set -u
+if [[ "${1:-}" == "--help" ]]; then
+  printf '  %s\n' --output-format --max-budget-usd --no-session-persistence --strict-mcp-config --json-schema --tools --system-prompt
+  exit 0
+fi
+sys="" schema="" tools="<unset>"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --system-prompt) shift; sys="$1" ;;
+    --json-schema) shift; schema="$1" ;;
+    --tools) shift; tools="$1" ;;
+    --model|--max-budget-usd|--output-format) shift ;;
+  esac
+  shift
+done
+stage=extract
+if printf '%s' "$sys" | grep -q 'LOOPWATCH-STAGE: triage'; then stage=triage; fi
+mkdir -p "${REPLAY_OUT:?}"
+cat > "$REPLAY_OUT/$stage-input.txt"
+printf '%s' "$schema" > "$REPLAY_OUT/$stage-schema.json"
+printf '%s\n' "$tools" > "$REPLAY_OUT/$stage-tools.txt"
+cat "${REPLAY_DIR:?}/$stage.json"

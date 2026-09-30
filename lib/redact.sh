@@ -16,19 +16,43 @@
 # Built-in secret patterns: [kind, regex, flags]
 builtin_rules_json() {
   jq -nc '[
+    ["anthropic",  "sk-ant-(?:api|admin)[0-9]{2}-[A-Za-z0-9_-]{20,}", ""],
+    ["openai",     "sk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{20,}", ""],
+    ["aws",        "(?i:aws_?secret_?access_?key)[\"'"'"']?\\s*[:=]\\s*[\"'"'"']?[A-Za-z0-9/+=]{40}", ""],
     ["key",        "sk-[A-Za-z0-9_-]{16,}", ""],
     ["stripe",     "(?:sk|rk|pk)_(?:live|test)_[A-Za-z0-9]{16,}", ""],
     ["github",     "gh[pousr]_[A-Za-z0-9]{20,}", ""],
     ["github",     "github_pat_[A-Za-z0-9_]{20,}", ""],
-    ["aws",        "AKIA[0-9A-Z]{16}", ""],
-    ["slack",      "xox[baprs]-[A-Za-z0-9-]{10,}", ""],
+    ["aws",        "(?:A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16}", ""],
+    ["slack",      "xox[abeoprs]-[A-Za-z0-9-]{10,}", ""],
+    ["slack",      "xapp-[0-9]-[A-Za-z0-9]+-[0-9]+-[A-Za-z0-9]+", ""],
+    ["slack",      "https://hooks\\.slack\\.com/(?:services|workflows|triggers)/[A-Za-z0-9+/_-]{20,}", ""],
+    ["gitlab",     "gl(?:pat|dt|ptt|rt|oas|cbt|imt|agent)-[A-Za-z0-9_-]{20,}", ""],
+    ["npm",        "npm_[A-Za-z0-9]{36}", ""],
+    ["pypi",       "pypi-AgEIcHlwaS5vcmc[A-Za-z0-9_-]{50,}", ""],
+    ["huggingface","hf_[A-Za-z0-9]{30,}", ""],
+    ["sendgrid",   "SG\\.[A-Za-z0-9_-]{16,32}\\.[A-Za-z0-9_-]{16,64}", ""],
+    ["twilio",     "\\bSK[0-9a-fA-F]{32}\\b", ""],
+    ["digitalocean","do[opr]_v1_[a-f0-9]{64}", ""],
+    ["azure",      "AccountKey=[A-Za-z0-9+/=]{40,}", ""],
+    ["shopify",    "shp(?:at|ca|pa|ss)_[a-fA-F0-9]{32}", ""],
+    ["telegram",   "\\b[0-9]{5,16}:AA[A-Za-z0-9_-]{30,}", ""],
+    ["grafana",    "glc_[A-Za-z0-9+/]{32,}={0,2}|glsa_[A-Za-z0-9]{32}_[A-Fa-f0-9]{8}", ""],
+    ["docker",     "dckr_pat_[A-Za-z0-9_-]{27,}", ""],
+    ["supabase",   "sbp_[a-f0-9]{40}", ""],
+    ["doppler",    "dp\\.(?:st|ct|sa|scim|audit|pt)\\.[A-Za-z0-9._-]{40,}", ""],
+    ["databricks", "dapi[a-f0-9]{32}(?:-[0-9]+)?", ""],
+    ["newrelic",   "NR(?:AK|AA|II|JS|RA)-[A-Z0-9]{27}", ""],
+    ["atlassian",  "ATATT3[A-Za-z0-9_=-]{50,}", ""],
+    ["pulumi",     "pul-[a-f0-9]{40}", ""],
+    ["linear",     "lin_(?:api|oauth)_[A-Za-z0-9]{40}", ""],
     ["google",     "AIza[0-9A-Za-z_-]{35}", ""],
     ["jwt",        "eyJ[A-Za-z0-9_-]{15,}\\.[A-Za-z0-9_-]{15,}\\.[A-Za-z0-9_-]{10,}", ""],
-    ["pem",        "-----BEGIN [A-Z ]*PRIVATE KEY-----", ""],
+    ["pem",        "-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----", ""],
     ["bearer",     "bearer\\s+[A-Za-z0-9._~+/=-]{20,}", "i"],
     ["conn-creds", "[A-Za-z][A-Za-z0-9+.-]*://[^\\s:/@]+:[^\\s@/]+@", ""],
     ["assignment", "(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key)[\"'"'"']?\\s*[:=]\\s*[\"'"'"']?(?=[^\\s\"'"'"',;]*[0-9])[^\\s\"'"'"',;]{8,}", "i"],
-    ["email",      "[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)*\\.[A-Za-z]{2,}", ""]
+    ["email",      "[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\\.[A-Za-z0-9-]{1,63}){0,8}\\.[A-Za-z]{2,24}", ""]
   ] | map({kind: .[0], re: .[1], flags: .[2],
             repl: ("[REDACTED:" + .[0] + "]" + (if .[0] == "conn-creds" then "@" else "" end))})'
 }
@@ -59,8 +83,63 @@ build_rules() {
 
 scrub_all() {
   [[ -n "${RULES_JSON:-}" && -f "$RULES_JSON" ]] || build_rules
+  # Runtime self-test: each scrubbed stream first scrubs a line of per-run canary secrets
+  # with the same jq program and the BUILT-IN rules (redact.list terms are user regexes that
+  # could otherwise rewrite the canary id or marker and fake a pass or a failure), then scrubs
+  # the data. A surviving canary is recorded as a leak; nothing canary-related enters the output.
+  if [[ -n "${CANARY_ID:-}" ]]; then canary_check; fi
   jq -rR --slurpfile rules "$RULES_JSON" \
     'reduce $rules[0][] as $r (.; gsub($r.re; $r.repl; $r.flags))'
+}
+
+# ── per-run canary (privacy pipeline self-test) ─────────────────────────
+# CANARY_ID: "LWCANARY" + 8 random uppercase hex, fresh every run; it appears nowhere but in
+# the canary line, so finding it anywhere after scrubbing is proof of a leak.
+canary_init() {
+  CANARY_ID="LWCANARY$(od -An -tx1 -N4 /dev/urandom | tr -d ' \n' | tr 'a-f' 'A-F')"
+  : > "$RUN_DIR/.canary-streams"; rm -f "$RUN_DIR/.canary-leak"
+}
+canary_line() {
+  printf '@@lw-canary@@ sk-%s0123456789 ghp_%sABCDEFGH AKIA%s token=%s1234 lw-%s@canary.invalid Bearer %sabcdefghijkl\n' \
+    "$CANARY_ID" "$CANARY_ID" "$CANARY_ID" "$CANARY_ID" "$CANARY_ID" "$CANARY_ID"
+}
+canary_check() {
+  local out
+  out="$(canary_line | jq -rR --slurpfile rules "$RULES_JSON" '
+    reduce ($rules[0][] | select(.kind | startswith("redact.list") | not)) as $r (.; gsub($r.re; $r.repl; $r.flags))')"
+  echo 1 >> "$RUN_DIR/.canary-streams"
+  case "$out" in *"$CANARY_ID"*) printf '%s\n' "$out" >> "$RUN_DIR/.canary-leak" ;; esac
+}
+# canary_verify <expect-streams>: fails (1) with a reason when a canary survived scrubbing,
+# when the id shows up anywhere in the run dir, or when bundle files exist that never went
+# through scrub_all.
+canary_verify() {
+  local want="$1" got
+  [[ -n "${CANARY_ID:-}" ]] || return 0
+  if [[ -s "$RUN_DIR/.canary-leak" ]]; then echo "a canary secret survived scrubbing"; return 1; fi
+  got="$(wc -l < "$RUN_DIR/.canary-streams" | tr -d ' ')"
+  if [[ "$got" -lt "$want" ]]; then echo "only $got of $want bundle file(s) went through scrub_all"; return 1; fi
+  if grep -rlF --exclude=.canary-leak "$CANARY_ID" "$RUN_DIR" >/dev/null 2>&1; then
+    local hit; hit="$(grep -rlF --exclude=.canary-leak "$CANARY_ID" "$RUN_DIR" | head -1)"
+    echo "canary id found in ${hit#"$RUN_DIR"/}"; return 1
+  fi
+  return 0
+}
+
+# input_scan <file>: the text about to be sent to a model must hold no rule hit at all
+# (scrub replaced every match). A hit means data reached the model input without scrubbing.
+input_scan() {
+  local hits
+  [[ -n "${RULES_JSON:-}" && -f "$RULES_JSON" ]] || build_rules
+  # Callers pass the DATA headed for the model (bundle files, excerpts, candidate text), not
+  # the assembled prompt, and every replacement the rules themselves inserted ([REDACTED:*]
+  # markers, custom "=>repl" text) is removed first, so a redact.list term that happens to
+  # match our own structure or its own marker cannot fake a leak and stop every run.
+  hits="$(jq -rRs --slurpfile rules "$RULES_JSON" '
+      ($rules[0] | map(.repl) | unique | sort_by(-length)) as $reps
+      | reduce $reps[] as $r (.; split($r) | join(" "))
+      | . as $t | $rules[0][] | select(. as $r | $t | test($r.re; $r.flags)) | .kind' "$1" 2>/dev/null | sort -u)"
+  [[ -z "$hits" ]] || { printf '%s' "$hits" | tr '\n' ',' | sed 's/,$//'; return 1; }
 }
 
 # postscan_text <file>: prints the kinds of the rules that match (one per line)

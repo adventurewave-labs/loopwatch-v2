@@ -37,16 +37,40 @@ MAX_CANDIDATES=5
 EXCERPT_MAX_KB=24            # per candidate
 EXCERPT_TOTAL_KB=80
 INCLUDE_TOOL_CALLS=true      # keep "[tool:Name] <command/path>" lines (results are always dropped)
-MAX_TURNS=50                 # passed only if the CLI lists --max-turns (PASS_MAX_TURNS=true forces it)
+MONTHLY_BUDGET_USD="20.00"   # calendar-month cap across all runs (0 = off); a run that would exceed it is skipped, activity stays queued
+COST_ANOMALY_FACTOR=3        # flag (ledger + PR) a run costing >= 3x the rolling median
+FALLBACK_MODEL="haiku"       # writer falls back to this when MODEL is overloaded ("" = never)
+CLAUDE_RETRIES=2             # retries on transient failures (overload, 429/5xx, network); never on budget caps
+THINKING_TOKENS=0            # extended-thinking budget per call; 0 = off (most of the triage output cost when on)
 MAX_FILE_KB=120              # per-source delta cap after filtering
 MAX_BUNDLE_KB=300            # whole-bundle cap; oldest content is trimmed first
 ACTIVITY_MIN_BYTES=2000      # below this much real content, no model call at all (provisional default)
 SKIP_EMPTY=true
 
+# Near-duplicate guard: a page whose title+summary token overlap (Jaccard, title weighted
+# double) with an existing catalog entry reaches this score is skipped. 0 = off.
+NEAR_DUP_THRESHOLD=0.55
+
+# Related pages: each new page gets a static "Related" list (BM25 over title, tags and summary)
+# linking up to RELATED_PAGES catalog pages that score at least RELATED_MIN_SCORE. 0 = off.
+RELATED_PAGES=3
+RELATED_MIN_SCORE=1.5
+
+# Retention: run logs, failure autopsies and the private copies of skipped pages older than
+# this many days are deleted at the start of each run (0 = keep forever). The ledger is kept.
+RETENTION_DAYS=30
+
+# ── Telemetry (optional) ─────────────────────────────────────────────────
+# Each run as an OTLP/JSON trace using the OpenTelemetry GenAI semantic conventions
+# (gen_ai.request.model, gen_ai.usage.input_tokens, ...). Counts and costs only, no content.
+OTEL_EXPORT_DIR=""                     # e.g. "$HOME/.local/state/loopwatch/otel": one file per run
+# OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:4318"   # also POST to a collector (/v1/traces)
+# OTEL_EXPORTER_OTLP_HEADERS="x-api-key=..."
+
 # ── Publish (R-9) ────────────────────────────────────────────────────────
 # Each run commits to loopwatch/<date> in the catalog repo and opens a PR; while a
 # loopwatch PR is open, later runs add to it. Nothing is ever pushed to CATALOG_BASE.
-CATALOG_REPO="marcuspat/loopwatch-catalog"   # personal account: Vercel Hobby cannot deploy private org repos
+CATALOG_REPO="adventurewave-labs/loopwatch-catalog"
 CATALOG_BASE="main"
 # CATALOG_DIR="$HOME/.local/state/loopwatch/catalog"   # tool-managed clone (default)
 
@@ -68,10 +92,11 @@ EXCLUDE_PROJECTS=()          # always wins over INCLUDE_PROJECTS
 # One regex per line, optional "=>replacement". Never commit this file.
 REDACT_LIST="$HOME/.config/loopwatch/redact.list"
 
-# The catalog must deploy behind Vercel Deployment Protection. Preflight fails
-# unless this says "protected" (or ALLOW_PUBLIC=true, which you should not set).
+# The catalog must be served behind authentication (the catalog repo's server.js:
+# Basic Auth, fails closed). Preflight fails unless this says "protected"
+# (or ALLOW_PUBLIC=true, which you should not set).
 SITE_VISIBILITY="protected"
 ALLOW_PUBLIC=false
-# Optional live check: set these and export VERCEL_TOKEN (never stored by loopwatch).
-VERCEL_PROJECT_ID="prj_lTsOmjImav6NcOHOmI3QCKzET1GY"   # loopwatch-catalog (Vercel Authentication: all deployments)
-VERCEL_TEAM_ID="team_EuH46Fxu7FpOYopJ0HFygJYU"
+# Live check: preflight fetches $SITE_URL/manifest.json without credentials and
+# fails unless it is refused.
+SITE_URL="https://catalog-production-5b49.up.railway.app"
