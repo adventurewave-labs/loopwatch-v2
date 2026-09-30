@@ -1,0 +1,10 @@
+{
+  "name": "loopwatch-catalog",
+  "private": true,
+  "description": "Private loopwatch catalog: static site/ served behind HTTP Basic Auth (fails closed).",
+  "scripts": {
+    "start": "node server.js",
+    "test": "bash test/server.test.sh"
+  },
+  "engines": { "node": ">=20" }
+}

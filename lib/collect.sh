@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # loopwatch lib — delta collection (sourced by loopwatch-run.sh; do not execute)
-# Contract: fills $RUN_DIR/bundle/{transcripts,git}/ + bundle/context.json, records each
+# Contract: fills $RUN_DIR/bundle/{transcripts,git}/ (git/ = GitHub API, lib/collect_github.sh) + bundle/context.json, records each
 # bundle file's source age in $RUN_DIR/bundle-index.tsv, and writes advanced offsets to
 # $RUN_DIR/new-watermarks.json (applied only after a successful publish or skip).
 #
@@ -15,14 +15,17 @@
 # Tool calls are kept as one compact "[tool:Name] <command/path>" line each (tool
 # RESULTS are always dropped): in agentic sessions most of the work is tool calls, and
 # a text-only filter keeps ~0.1% of the transcript. INCLUDE_TOOL_CALLS=false restores v0.1.
-# Tolerant of schema drift: unparseable lines are skipped.
+# Tolerant of schema drift: each line is parsed on its own, so one malformed line is
+# skipped without losing the rest of the delta.
 filter_transcript() {
-  jq -r --arg rundir "$RUN_DIR" --arg tools "${INCLUDE_TOOL_CALLS:-true}" '
+  jq -R -r --arg rundir "$RUN_DIR" --arg tools "${INCLUDE_TOOL_CALLS:-true}" '
     def tool_line:
       "[tool:" + (.name // "?") + "] "
       + ((.input // {}) | (.command // .file_path // .path // .url // .pattern // .query // .description // .prompt
                            // (tostring)) | tostring | gsub("\\s+"; " ") | .[0:200]);
-    select(.type == "user" or .type == "assistant")
+    (fromjson? // empty)
+    | select(type == "object")
+    | select(.type == "user" or .type == "assistant")
     | select((.isMeta // false) != true and (.isSidechain // false) != true)
     | select(((.cwd // "") | (. == $rundir or endswith("/loopwatch/run"))) | not)
     | .message as $m
@@ -74,9 +77,22 @@ project_allowed() {
   return 0
 }
 
+# A byte offset alone can't tell "grew" from "replaced": a file truncated or rotated and then
+# rewritten past the old offset looks like growth, and everything before the offset would be
+# skipped for good (found by the watermark property test, test/prop/watermarks.sh). So each
+# offset carries a head fingerprint, "<n>:<hash of the first n bytes>" with n = min(offset,
+# WM_HEAD_BYTES), in .heads; a mismatch means the file was replaced and is re-read from 0.
+# State written before fingerprints existed has no .heads entry and is trusted as before.
+WM_HEAD_BYTES=1024
 wm_get() { jq -r --arg k "$1" '.files[$k] // empty' "$WATERMARKS"; }
-wm_set() {
-  jq --arg k "$1" --argjson v "$2" '.files[$k] = $v' \
+wm_head_get() { jq -r --arg k "$1" '(.heads // {})[$k] // empty' "$WATERMARKS"; }
+wm_head_of() {  # wm_head_of <file> <offset> -> "<n>:<hash>"
+  local n="$2"
+  [[ "$n" -le "$WM_HEAD_BYTES" ]] || n="$WM_HEAD_BYTES"
+  printf '%s:%s' "$n" "$(head -c "$n" "$1" | hash_stream | cut -c1-16)"
+}
+wm_set() {  # wm_set <key> <offset> <file>
+  jq --arg k "$1" --argjson v "$2" --arg h "$(wm_head_of "$3" "$2")" '.files[$k] = $v | .heads[$k] = $h' \
     "$RUN_DIR/new-watermarks.json" > "$RUN_DIR/nw.tmp" \
     && mv "$RUN_DIR/nw.tmp" "$RUN_DIR/new-watermarks.json"
 }
@@ -93,7 +109,7 @@ decide_source() {
 # collect_globs <label> <glob>...
 collect_globs() {
   local label="$1"; shift
-  local pat f key size old chunk len partial consumed out n=0 cwd proj sess now decision
+  local pat f key size old chunk len partial consumed out n=0 cwd proj sess now decision head_fp
   now="$(now_epoch)"
   for pat in "$@"; do
     while IFS= read -r f; do
@@ -108,7 +124,7 @@ collect_globs() {
         # first sighting: only files touched within FIRST_RUN_LOOKBACK_HOURS are mined
         # from the start; older history is watermarked at its current size and skipped.
         if [[ $(( now - $(file_mtime "$f") )) -gt $(( FIRST_RUN_LOOKBACK_HOURS * 3600 )) ]]; then
-          wm_set "$key" "$size"
+          wm_set "$key" "$size" "$f"
           continue
         fi
         old=0
@@ -116,6 +132,12 @@ collect_globs() {
       if [[ "$size" -lt "$old" ]]; then
         log "source shrank (truncated/rotated) — re-reading from 0: $label:$key"   # bug 4
         old=0
+      elif [[ "$old" -gt 0 ]]; then
+        head_fp="$(wm_head_get "$key")"
+        if [[ -n "$head_fp" && "$(wm_head_of "$f" "${head_fp%%:*}")" != "$head_fp" ]]; then
+          log "source replaced (rotated/rewritten past its old offset) — re-reading from 0: $label:$key"
+          old=0
+        fi
       fi
       [[ "$size" -gt "$old" ]] || continue
 
@@ -135,7 +157,7 @@ collect_globs() {
         continue
       fi
 
-      cwd="$(head -c "$consumed" "$chunk" | jq -r 'select(.cwd != null) | .cwd' 2>/dev/null | head -1 || true)"
+      cwd="$(head -c "$consumed" "$chunk" | jq -R -r 'fromjson? | objects | select(.cwd != null) | .cwd' 2>/dev/null | head -1 || true)"
       proj="$(basename "${cwd:-unknown}")"
       sess="$(basename "$f" .jsonl | cut -c1-8)"
       n=$((n + 1))
@@ -147,48 +169,13 @@ collect_globs() {
       } | scrub_all > "$out"
       rm -f "$chunk"
       # drop if filtering left nothing beyond the header
-      if [[ "$(grep -v '^=== ' "$out" | wc -c | tr -d ' ')" -lt 20 ]]; then
+      if [[ "$( { grep -v '^=== ' "$out" || true; } | wc -c | tr -d ' ')" -lt 20 ]]; then
         rm -f "$out"
       else
         printf '%s\t%s\n' "$(file_mtime "$f")" "bundle/transcripts/${label}-${n}.txt" >> "$RUN_DIR/bundle-index.tsv"
       fi
-      wm_set "$key" "$((old + consumed))"
-    done < <(compgen -G "$pat" || true)
-  done
-}
-
-collect_git() {
-  local repo name key head last out
-  for repo in ${GIT_REPOS[@]+"${GIT_REPOS[@]}"}; do
-    if [[ ! -d "$repo/.git" ]]; then
-      log "git source missing, skipping: $(basename "$repo")"
-      continue
-    fi
-    name="$(basename "$repo")"
-    key="$(hash_key "$repo")"
-    head="$(git -C "$repo" rev-parse HEAD 2>/dev/null || true)"
-    [[ -n "$head" ]] || continue
-    last="$(jq -r --arg k "$key" '.git[$k] // ""' "$WATERMARKS")"
-
-    out="$RUN_DIR/bundle/git/${name}.log"
-    {
-      echo "=== repo: $name ==="
-      if [[ -n "$last" ]] && git -C "$repo" cat-file -e "$last" 2>/dev/null; then
-        { git -C "$repo" log "${last}..HEAD" --stat --date=short --format='%h %ad %s' 2>/dev/null || true; } \
-          | head -c "$((MAX_FILE_KB * 1024))"
-      else
-        { git -C "$repo" log --since=48.hours --stat --date=short --format='%h %ad %s' 2>/dev/null || true; } \
-          | head -c "$((MAX_FILE_KB * 1024))"
-      fi
-    } | scrub_all > "$out"
-    if [[ "$(grep -v '^=== ' "$out" | wc -c | tr -d ' ')" -lt 20 ]]; then
-      rm -f "$out"
-    else
-      printf '%s\t%s\n' "$(now_epoch)" "bundle/git/${name}.log" >> "$RUN_DIR/bundle-index.tsv"
-    fi
-    jq --arg k "$key" --arg v "$head" '.git[$k] = $v' \
-      "$RUN_DIR/new-watermarks.json" > "$RUN_DIR/nw.tmp" \
-      && mv "$RUN_DIR/nw.tmp" "$RUN_DIR/new-watermarks.json"
+      wm_set "$key" "$((old + consumed))" "$f"
+    done < <(compgen -G "$pat" | LC_ALL=C sort || true)
   done
 }
 
@@ -230,7 +217,7 @@ bundle_bytes() {
 # bytes of real content (headers excluded) — the activity bar compares against this
 activity_bytes() {
   find "$RUN_DIR/bundle/transcripts" "$RUN_DIR/bundle/git" -type f -exec cat {} + 2>/dev/null \
-    | grep -v '^=== ' | wc -c | tr -d ' '
+    | { grep -v '^=== ' || true; } | wc -c | tr -d ' '
 }
 
 write_context() {
@@ -248,7 +235,7 @@ collect_all() {
   : > "$RUN_DIR/bundle-index.tsv"
   collect_globs "claude-code" ${CLAUDE_CODE_GLOBS[@]+"${CLAUDE_CODE_GLOBS[@]}"}
   collect_globs "cowork"      ${COWORK_GLOBS[@]+"${COWORK_GLOBS[@]}"}
-  collect_git
+  collect_github
   trim_bundle
   BUNDLE_BYTES="$(bundle_bytes)"
   write_context
@@ -281,12 +268,8 @@ list_sources() {
         old="$(wm_get "$key")"
         printf '  %-22s %10sB %10sB  %s:%s\n' "$decision" "$size" "$(( size - ${old:-0} ))" \
           "$label" "$(basename "$(dirname "$f")")/$(basename "$f")"
-      done < <(compgen -G "$pat" || true)
+      done < <(compgen -G "$pat" | LC_ALL=C sort || true)
       if [[ "$found" -eq 0 ]]; then echo "  (no matches)"; fi
     done
-  done
-  echo "— git sources —"
-  for f in ${GIT_REPOS[@]+"${GIT_REPOS[@]}"}; do
-    if [[ -d "$f/.git" ]]; then echo "  ok       $f"; else echo "  MISSING  $f"; fi
   done
 }
