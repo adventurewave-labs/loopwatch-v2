@@ -1,0 +1,170 @@
+# loopwatch — revival PRD
+
+**Pitch:** Turn the day's Claude Code / Cowork / GitHub activity into a private, searchable reference catalog, on demand or nightly, within a fixed token budget, and publish it through a PR you merge.
+
+| | |
+|---|---|
+| Repo | `adventurewave-labs/loopwatch` (single branch `main`) |
+| Visibility | Private repo. The catalog it deploys is **public by default** (see §3) |
+| Stack | bash 3.2 + jq + git + headless `claude -p`; static HTML/JS catalog; launchd; GitHub Actions |
+| Created | 2026-07-07 (`f804616` initial commit, `b8556e4` v0.1.0) |
+| Feature work stopped | **2026-07-07**. The whole product landed in one commit. Later commits: retroactive PRD (`88ebb45`, 07-23) and MIT licence (`67fbb91`, 08-31) |
+| Builds on | `docs/PRD.md` (retroactive v0.1.0 PRD). This document covers only what changed since then |
+| Doc status | Draft v1 — 2026-09-25 |
+
+---
+
+## 2. Why revive it now
+
+- **The existing PRD's premise no longer holds.** v0.1.0 assumes a workstation holding local clones (`GIT_REPOS=("$HOME/src/turbo-flow")` in `loopwatch.conf.example`) and a scaffold "dropped into your HTML repo root" (README, Install step 1). Marcus now works in Claude Code Desktop + Cowork with no local checkouts. The git source and the install model both have to change, or the tool can't run at all.
+- **"Review past chats" is a manual step in his daily loop.** loopwatch is the piece that automates it. This is loop engineering: it wires transcripts that already exist to the same `claude -p` and the Vercel pipeline he already uses. It adds no new platform.
+- **He deleted every Cowork scheduled task over token burn.** The nightly design only comes back if cost is a hard, visible constraint. v0.1.0 has one cost control (skip below `ACTIVITY_MIN_BYTES=300`) and no budget, no accounting and no cheap-model path.
+- **Turbo Rig (`marcuspat/turbo-rig`) now measures agent burn.** It has `scripts/tokens.py`, `scripts/activity.py` and the `~/.local/state/turbo-rig/gate-log.jsonl` schema with `in/cached/out/cost_usd/model`. loopwatch runs should appear in that same view instead of being a hidden cost.
+- **Privacy exposure is real.** Transcripts contain client names. v0.1.0 publishes to the public web by default and only scrubs token-shaped strings.
+
+## 3. Current state (verified)
+
+All citations are at `main@67fbb91`.
+
+### Works (verified by reading the code and tests)
+- **Pipeline:** `bin/loopwatch-run.sh` runs collect → `claude -p prompts/extract.md --model sonnet --max-turns 50 --allowedTools Read,Write,Glob,Grep` → `validate_meta` → `publish_run`. It has a mkdir lock, an ERR-trap autopsy into `state/failed/` (keeps the last 5), plus `--dry-run` and `--list-sources`.
+- **Collection** (`lib/collect.sh`): byte-offset watermarks per JSONL file and HEAD sha per git repo. It filters to `[user]`/`[assistant]` text and caps each source at `MAX_FILE_KB=200` after filtering. When a repo has no watermark, it falls back to the last 48 hours of commits.
+- **Scrub** (`scrub()`): `sk-…`, `gh[pousr]_…`, `github_pat_…`, `AKIA…`, `xox?-…`, JWTs and PEM private-key headers.
+- **Validation firewall** (`lib/publish.sh`): checks run-meta shape, slug and category regexes, that referenced files exist, that files are HTML, and that pages load no external `src=`/`href=` css/js.
+- **Publish:** dedups slugs against the manifest, writes the digest HTML, merges the manifest atomically, and commits content and watermarks together. Push failure is non-fatal.
+- **Catalog UI** (`site/index.html`): fetches `manifest.json` and renders a category tree, client-side search over title/summary/tags, and the last 10 digests. All values are HTML-escaped.
+- **Tests:** `bin/smoke-test.sh` stubs `claude` and covers publish, a planted-secret scrub, the empty-run skip, dry-run side-effect freedom and slug dedup. CI (`.github/workflows/ci.yml`) runs it on ubuntu + macOS, weekly and on every push/PR, plus `shellcheck -S error`. `release.yml` gates tagged releases on the smoke test. I did not check whether CI currently passes.
+- **Ops helpers:** `bin/install.sh` plus `launchd/com.marcuspatman.loopwatch.plist` (daily 21:30), `bin/ship.sh`, `bin/bootstrap-repo.sh`, `.devcontainer/`.
+
+### Stubbed / assumed
+- **Cowork source path is a guess.** `COWORK_GLOBS` points at `~/Library/Application Support/Claude/local-agent-mode-sessions/*/*/*.jsonl`, and both the conf and `docs/PRD.md` say to verify it. It is unverified. The JSONL filter also assumes the Claude Code schema.
+- **The extractor is only exercised through a stub.** No test covers real-model output quality or cost.
+
+### Claimed but absent / not evidenced
+- **No production evidence in this repo.** `site/manifest.json` has `entries: []`, `digests: []`, `updated: null`, and `state/` holds only `.gitkeep`. By design, production runs would live in whichever HTML repo the scaffold was copied into. That repo is not identified anywhere. GitHub code search for `"generated by loopwatch"` returned nothing, but the same search doesn't return loopwatch itself either, so the result is inconclusive.
+- **The README risk flag relies on protection that doesn't exist.** It recommends "enable Vercel Deployment Protection or keep the project private". Nothing in the code enforces or checks either.
+
+### Known bugs and gaps (found by reading the code)
+1. **Self-ingestion (probable).** `claude -p` runs with `cd "$STAGING"` in `$TMPDIR/loopwatch.XXXXXX`. If the CLI persists headless sessions, which is its default behaviour as far as I know, each run writes a transcript under `~/.claude/projects/<tmp-path>/`. That transcript contains the whole bundle, and the default glob `~/.claude/projects/*/*.jsonl` would pick it up the next night. Cost would compound and content would be re-mined. Verify on the Mac, then exclude it.
+2. **No total bundle cap.** The limit is 200 KB *per source file* with no ceiling on the bundle, so a busy day with many sessions feeds Sonnet an unbounded input.
+3. **Partial-line loss.** The watermark is set to the file size at read time. If a session is still being written, the trailing partial JSON line is dropped by `jq … 2>/dev/null || true` and the offset has already moved past it, so that content is lost for good. The watermark should stop at the last `\n`.
+4. **Truncated or rotated files are ignored** (`size <= old → continue`) until they grow past the old offset.
+5. **Scrub gaps.** No patterns for Stripe `sk_live_`/`rk_live_` (underscore), Google `AIza…`, Vercel/Railway tokens, `scheme://user:pass@host` connection strings, `password=`/`secret=` assignments, or email addresses. It also does nothing about **client names**.
+6. **The validator lets unsafe content through.** It doesn't reject inline `<script>`, which the prompt forbids but nothing enforces. It also misses single-quoted or protocol-relative `src='//…'` and `<img>`/`<iframe>` loads.
+7. **Paths leak into git.** `state/watermarks.json` stores absolute paths (e.g. `/Users/<you>/.claude/projects/-Users-…-<project-dir>/…jsonl`) and is committed to the publishing repo next to the site. Project directory names can reveal client names.
+8. **No cost telemetry.** There is no `--output-format json` and nothing records tokens or cost per run.
+9. **The retroactive PRD is badly formatted.** `docs/PRD.md` has doubled list numbering (`2. 2.`) and stray `-` bullets, which looks like a paste artefact. It is cosmetic only.
+
+### Issues / PRs / branches
+There are no issues and no PRs (open or closed), and only `main` exists. Nothing needs triage.
+
+## 4. Goals and non-goals
+
+**Goals**
+1. Make it runnable in how Marcus works now: transcripts on the Mac, git activity from GitHub over the API, and no dev checkouts.
+2. Make cost bounded, visible and zero on quiet days.
+3. Make the catalog private by default and redact client names as well as secrets.
+4. Publish through a PR with a protected preview and a human merge, the same gate as the rest of his estate.
+5. Expose clean seams to Turbo Rig (cost ledger) and turbo-brain (intake) without merging codebases.
+
+**Non-goals**
+- A daemon, a server, a database, or a multi-agent pipeline.
+- Real-time processing. The SessionEnd hook stays in the roadmap.
+- Replacing Turbo Rig's `digest.sh`. That digest is *operational* (PRs, gate burn, sites, codespaces); loopwatch's digest is *knowledge* (decisions, fixes, artifacts).
+- Multi-user support, or an editing UI.
+
+## 5. Users and core use cases
+
+- **Marcus, morning loop:** open the catalog preview PR, skim the digest, and merge it or edit it. This replaces "review past chats".
+- **Marcus, three months later:** search "why did we pick X" and land on a decision page.
+- **Turbo Rig dashboards:** read loopwatch's run ledger to show what the knowledge loop cost.
+- **turbo-brain (future):** ingest `manifest.json` + pages as a curated source.
+
+## 6. Requirements
+
+P0 is the minimum for loopwatch to be useful again.
+
+| ID | Pri | Requirement | Acceptance criteria |
+|---|---|---|---|
+| R-1 | P0 | **Hard cost budget per run** | `BUDGET_USD` and `MAX_BUNDLE_KB` in conf. The bundle is trimmed (oldest-first) to `MAX_BUNDLE_KB` before any model call. `claude -p` runs with `--output-format json`, and the parsed `total_cost_usd`/usage is written to the run ledger. If the installed CLI supports a native spend cap flag, use it; otherwise enforce the byte cap plus `MAX_TURNS`. A smoke test shows a bundle over the cap getting trimmed and the log recording it. |
+| R-2 | P0 | **Skip if nothing changed** (keep the current behaviour, raise the bar) | No model call when the delta after filtering is below `ACTIVITY_MIN_BYTES`. The default is raised from 300 bytes; the new value is picked from observed data in Phase 1. It also skips when the delta is only from loopwatch's own sessions. Test: a run with only self-generated transcripts makes zero `claude` invocations. |
+| R-3 | P0 | **Two-tier model: cheap triage, expensive writing** | Stage A (`TRIAGE_MODEL`, default `haiku`) reads the bundle and emits `candidates.json` (0–N items with evidence pointers) plus the digest summary. Stage B (`MODEL`, default `sonnet`) runs **only if** candidates is non-empty, and reads just the cited excerpts. Stub test: an empty candidates list means Stage B is never called. |
+| R-4 | P0 | **Exclude self-ingestion** | Headless runs execute from a fixed directory (e.g. `~/.local/state/loopwatch/run/`), and its project dir is excluded from `CLAUDE_CODE_GLOBS`. Session persistence is disabled if the CLI supports it. Test: after two runs, the second bundle contains no text from the first run's extraction. |
+| R-5 | P0 | **Private by default** | Catalog deploys only to a Vercel project with Deployment Protection on. `bin/loopwatch-run.sh --preflight` fails closed if `SITE_VISIBILITY` ≠ `protected` and `ALLOW_PUBLIC` ≠ `true`. The README risk flag is replaced by the enforced check. |
+| R-6 | P0 | **Client and entity redaction** | Gitignored `redact.list` (one term or regex per line, optional `=>replacement`) is applied in `scrub()` *before* the model sees anything. The same list is re-scanned on the generated pages *after* extraction, and any hit drops the page (fail closed) and logs it. Test: a planted client name never appears in `site/` or in the ledger. |
+| R-7 | P0 | **Source allowlist** | `INCLUDE_PROJECTS` (glob list on project dir names) defaults to *empty = nothing collected*. `--list-sources` shows what would be included and what excluded. |
+| R-8 | P0 | **Git activity via GitHub API, not local clones** | `collect_git` is replaced by `gh api`/`gh search commits` over configured owners (`marcuspat`, `adventurewave-labs`, `creandotumatrix-labs`) with a timestamp watermark, plus merged PRs. It works with zero local repos. Fixture test with a stubbed `gh`. |
+| R-9 | P0 | **Publish as a PR, not a push to main** | Each run commits to branch `loopwatch/<date>` in the catalog repo and opens or updates a PR with `gh pr create`. The Vercel preview is the review surface. It never pushes to the default branch. Test: stubbed `gh` receives exactly one `pr create` and no push to main. |
+| R-10 | P0 | **Fix collection correctness bugs** | Watermark stops at the last newline (bug 3). Handle truncated files by resetting when `size < old` (bug 4). Committed state holds hashed source keys, not absolute paths (bug 7). Each fix has a smoke-test case. |
+| R-11 | P1 | **Harden the validator** | Reject `<script`, `on*=` handlers, `<iframe`/`<object`/`<embed`, and any `src=`/`href=` to `//` or `http(s)://` in either quote style, with extra secret patterns (bug 5, bug 6). Test fixtures for each. |
+| R-12 | P1 | **Run ledger (Turbo Rig seam)** | Append one JSON line per run to `~/.local/state/loopwatch/runs.jsonl` with Turbo Rig's field names: `ts` (local), `repo:"loopwatch"`, `target:"nightly"\|"manual"`, `model`, `in`, `cached`, `out`, `cost_usd`, `duration_ms`, `pages`, `skipped_reason`. It is a separate file so gate-verdict stats in `activity.py` are not polluted. |
+| R-13 | P1 | **On-demand trigger first, schedule optional** | `loopwatch run` works from a Cowork or Claude Code session ("run loopwatch for yesterday"). `install.sh` is opt-in, and the plist is not installed by default. |
+| R-14 | P1 | **Verified Cowork source** | Replace the guessed glob with the path observed on Marcus's Mac, and add a fixture of that real (redacted) schema to the smoke test. |
+| R-15 | P2 | **Stable export contract (turbo-brain seam)** | Document `manifest.json` v1 as a public contract (`docs/manifest-schema.md`). Optionally add `--export-md DIR` to write each page as Markdown with front-matter. No turbo-brain code in this repo. |
+| R-16 | P2 | **Digest drop to Turbo Rig inbox** | Optional `EXPORT_DIGEST_TO=~/turbo-rig/memory/inbox/` writes `loopwatch-YYYY-MM-DD.md` next to the rig's own digest. |
+
+## 7. Technical approach
+
+**Keep:** the bash + jq + `claude -p` core, the watermark and lock model, `validate_meta`, the manifest/digest design, `site/index.html`, the smoke-test pattern (stubbed CLIs), and the CI matrix. These parts are sound and tested.
+
+**Change:**
+- **Install layout.** loopwatch becomes a tool, not a scaffold copied into the HTML repo. Code lives in a tool-managed clone at `~/.local/share/loopwatch` (installed with `gh repo clone`, updated with `git pull`). Config and state live in `~/.config/loopwatch/loopwatch.conf` and `~/.local/state/loopwatch/`. The catalog repo is a separate target: a tool-managed working clone under state, used only by `publish.sh`. This isn't a dev checkout.
+- **Catalog repo.** A new private repo (proposed `adventurewave-labs/loopwatch-catalog`) holds `site/` only. Watermarks stop being committed with content and become local state. The atomic resume property is kept by advancing watermarks only after the PR branch push succeeds. Trade-off: if the PR is later closed unmerged, that content is not re-mined, which is acceptable because the branch still exists.
+- **Extraction split.** `prompts/triage.md` (Haiku, read-only tools, writes `candidates.json` + digest) and `prompts/extract.md` (Sonnet, reads only the cited excerpts, writes pages). Both calls use `--output-format json` so cost is parsed into the ledger.
+- **Redaction.** `scrub()` gains `redact.list` handling and extra patterns. A new `postscan()` in `publish.sh` runs the same patterns over staged pages, the digest and `run-meta.json`.
+- **Git source.** `lib/collect_github.sh` uses `gh api` and `gh search commits --author=marcuspat --committer-date=">$WM"`. It needs `gh` authenticated on the Mac, which he already has for Turbo Rig.
+
+**Delete:** the "drop this directory into your HTML repo" install path and `GIT_REPOS` local-clone collection. Also delete `bin/bootstrap-repo.sh`: the repo exists, and the script's `gh repo create` path is dead. Keep `ship.sh`.
+
+**Dependencies:** bash 3.2, jq, git, `gh`, `claude` CLI. There are no new runtimes.
+
+**Secrets:** none stored by loopwatch. It relies on the `gh` and `claude` auth already on the Mac. `redact.list` is local and gitignored, and must never be committed.
+
+**Deploy target:** a Vercel project for `loopwatch-catalog` with Deployment Protection (Vercel Authentication) on production and previews. Every PR gets a protected preview.
+
+## 8. Delivery plan
+
+Each phase is one PR. CI (smoke on ubuntu + macOS, plus shellcheck) must be green. Marcus merges.
+
+| Phase | PR scope | Validation gate | Done means |
+|---|---|---|---|
+| 0 | **Discovery on the Mac** (runs via Claude Code Desktop, no code change): `--list-sources` against real paths; confirm whether headless runs persist transcripts (bug 1); confirm the Cowork JSONL path and schema; locate any existing catalog deployment. Findings go into a `docs/revival-notes.md` PR | PR review | The real paths and schema are known, and bug 1 is confirmed or ruled out |
+| 1 | **Correctness + cost floor:** R-1, R-2, R-4, R-10, ledger skeleton (R-12). New smoke cases | Smoke covers bundle cap, self-ingest exclusion, partial line, truncation, hashed state; the ledger line validates as JSON | A dry run on real data prints its bundle size, which is under the cap, and writes a ledger line |
+| 2 | **Privacy:** R-5, R-6, R-7, R-11 | Smoke plants a client name, a Stripe key, a connection string and an inline `<script>`; all four are blocked. Preflight fails when the site isn't protected | Nothing sensitive can reach `site/` in the tests, and the preflight is enforced |
+| 3 | **Two-tier extraction:** R-3, prompt split | Stub test: empty triage means no Stage B call. One real dry run on a sample day, with the ledger cost reported in the PR description | Ledger shows Haiku-only cost on a no-page day |
+| 4 | **GitHub source + PR publishing:** R-8, R-9, new catalog repo + protected Vercel project | Stubbed-`gh` tests; the first real run opens a PR with a protected preview | Marcus reviews a real digest in a Vercel preview and merges it |
+| 5 | **Trigger + seams:** R-13, R-14, R-15, R-16; README rewrite to match reality | Smoke still green; README claims checked against code | `loopwatch run` works on demand from a session; the schema doc is published |
+
+## 9. Success metrics
+
+All are targets, not measured claims.
+
+- **Cost:** no-activity days make zero model calls. Median cost per run, from the ledger, stays under a budget Marcus sets in Phase 1. A reasonable starting cap is well under $1/run *(estimate; confirm against the first 10 ledger rows)*.
+- **Signal:** at least 60% of catalog PRs merged without deleting pages over the first 30 days *(target)*. If lower, tighten the triage prompt.
+- **Privacy:** zero redaction-list or secret-pattern hits in merged content, and the post-scan drop count is visible in the ledger.
+- **Habit replacement:** Marcus reports that "review past chats" is replaced by reviewing the loopwatch PR (qualitative, checked after 2 weeks).
+- **Reliability:** at least 95% of runs end in either a PR or a logged skip, with no silent failures *(target)*.
+
+## 10. Risks and open decisions
+
+| # | Decision / risk | Options | **Recommended default** |
+|---|---|---|---|
+| D-1 | Trigger | (a) nightly launchd; (b) on-demand from session; (c) SessionEnd hook | **(b) on-demand, with (a) available opt-in.** No background token burn unless he opts in. Cheapest to reverse |
+| D-2 | Catalog visibility | (a) public Vercel; (b) Vercel with Deployment Protection; (c) no deploy, browse in GitHub | **(b).** Keeps the HTML/search UX, and a later downgrade to (c) is free |
+| D-3 | Publish path | (a) push to main (v0.1.0); (b) PR per run | **(b).** Matches his human merge gate; closing a PR is the rollback |
+| D-4 | Where the catalog lives | (a) inside the loopwatch repo; (b) separate private `loopwatch-catalog`; (c) existing HTML site repo | **(b).** Separates code CI from content churn, and moving it later is cheap |
+| D-5 | Extraction models | (a) Sonnet only (v0.1.0); (b) Haiku triage + Sonnet write; (c) Haiku only | **(b).** Quality where it matters, cheap on quiet days. Fall back to (c) if costs overrun |
+| D-6 | Turbo Rig integration | (a) write into `gate-log.jsonl`; (b) own ledger with the same field names; (c) none | **(b).** Avoids polluting `activity.py` verdict stats. The Turbo Rig adapter is a separate turbo-rig PR |
+| D-7 | Source scope default | (a) all projects; (b) allowlist | **(b).** Fails closed on privacy |
+| R-a | Transcript schema drift (Claude Code/Cowork JSONL) | — | Parsing is already tolerant. Add real-schema fixtures (R-14) so a failed smoke test catches drift |
+| R-b | Transcripts may not all be local | Claude Code Desktop *cloud* sessions may not write to `~/.claude/projects` | Phase 0 confirms coverage. If needed, cloud sessions are out of scope for v0.2 |
+| R-c | Redaction list is human-maintained | — | Post-scan fails closed, and the PR gate is the final check |
+
+## 11. Out of scope / explicitly cut
+
+- Merging loopwatch into Turbo Rig, or replacing `turbo-rig/scripts/digest.sh`.
+- Any turbo-brain code. Only the manifest contract (R-15) is in scope.
+- Cross-day pattern learning, category curation passes, and full-text body search (roadmap items from `docs/PRD.md`, deferred).
+- SessionEnd real-time runs (deferred until the ledger shows costs are stable).
+- `bin/bootstrap-repo.sh` and the drop-into-HTML-repo install path (deleted).
+- A server-side search or a database of any kind.

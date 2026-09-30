@@ -11,7 +11,7 @@ cd "$ROOT"
 LEVEL="${1:-patch}"
 MSG="${2:-}"
 
-./bin/smoke-test.sh
+./test/smoke-test.sh
 
 cur="$(cat VERSION 2>/dev/null || echo 0.0.0)"
 IFS=. read -r maj min pat <<EOF
