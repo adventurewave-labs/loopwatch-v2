@@ -49,9 +49,12 @@ RUN_DIR="$W" RUN_DATE=2026-01-01 bash -c "
   log() { :; }
   source '$SRC_ROOT/lib/extract.sh'; render_page_files '$W/all-pages.json'"
 n_rendered="$(find "$W/pages" -name '*.html' | wc -l | tr -d ' ')"
-find "$W/pages" -name '*.html' | sort | xargs -P 8 -I{} bash -c "
-  p=\"\$(source '$SRC_ROOT/lib/publish.sh'; html_problem '{}')\" || p='validator-error'
-  f='{}'; id=\"\${f##*/fz-}\"; printf '%s\t%s\n' \"\${id%.html}\" \"\${p:-PASS}\"" > "$W/verdicts.tsv"
+# The page path is passed as an argument, not via -I{}: BSD xargs caps an -I command at
+# 255 bytes ("command line cannot be assembled, too long"), which broke this on macOS.
+# shellcheck disable=SC2016  # the script is single-quoted on purpose: it expands in the child
+find "$W/pages" -name '*.html' | sort | xargs -P 8 -n 1 bash -c '
+  p="$(source "$1/lib/publish.sh"; html_problem "$2")" || p=validator-error
+  id="${2##*/fz-}"; printf "%s\t%s\n" "${id%.html}" "${p:-PASS}"' _ "$SRC_ROOT" > "$W/verdicts.tsv"
 n_cases="$(wc -l < "$W/cases.jsonl" | tr -d ' ')"
 [[ "$n_rendered" == "$n_cases" ]] || fail "rendered $n_rendered of $n_cases cases"
 grep -q $'\tvalidator-error$' "$W/verdicts.tsv" && fail "validator crashed on: $(grep $'\tvalidator-error$' "$W/verdicts.tsv" | head -3 | cut -f1 | tr '\n' ' ')"

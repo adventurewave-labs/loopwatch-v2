@@ -48,7 +48,7 @@ jobs:
         shell: bash
         run: |
           if [ "$RUNNER_OS" = "macOS" ]; then /bin/bash test/eval/run-eval.sh; else bash test/eval/run-eval.sh; fi
-      - name: scrubber coverage (53 secret kinds, false-positive guard)
+      - name: scrubber coverage (56 secret kinds, false-positive guard)
         shell: bash
         run: |
           if [ "$RUNNER_OS" = "macOS" ]; then /bin/bash test/scrub/run-coverage.sh; else bash test/scrub/run-coverage.sh; fi
@@ -56,7 +56,7 @@ jobs:
         shell: bash
         run: |
           if [ "$RUNNER_OS" = "macOS" ]; then /bin/bash test/prop/watermarks.sh; else bash test/prop/watermarks.sh; fi
-      - name: validator fuzz (1,406 XSS/exfil cases, both layers; passers must be browser-proven inert)
+      - name: validator fuzz (1,550 XSS/exfil cases, both layers; passers must be browser-proven inert)
         shell: bash
         run: |
           if [ "$RUNNER_OS" = "macOS" ]; then /bin/bash test/fuzz/run-fuzz.sh; else bash test/fuzz/run-fuzz.sh; fi
