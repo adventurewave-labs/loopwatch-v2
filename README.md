@@ -127,7 +127,7 @@ docs/                    PRD-v0.2, revival notes, manifest schema, v0.1 PRD
 test/smoke-test.sh   # no network, no real model, no real transcripts, ~30s
 ```
 
-CI runs the smoke suite on ubuntu, and on macOS under `/bin/bash`. That is stock 3.2.57, the same bash launchd uses, with the BSD userland. It also runs `shellcheck -S error`. CI runs on every push and PR, and weekly. `bin/ship.sh [patch|minor|major]` runs the tests, bumps `VERSION`, tags, and pushes. `release.yml` gates the GitHub release on the same suite. Each release ships a reproducible tarball, an SPDX 2.3 SBOM (`bin/loopwatch-sbom.sh`: every file with SHA1/SHA256, the runtime requirements, the pinned build actions) and `SHA256SUMS`. The tarball and SBOM carry a signed SLSA build-provenance attestation, which you can check with `gh attestation verify loopwatch-vX.Y.Z.tar.gz -R adventurewave-labs/loopwatch-v2`.
+CI runs the smoke suite on ubuntu, and on macOS under `/bin/bash`. That is stock 3.2.57, the same bash launchd uses, with the BSD userland. It also runs `shellcheck -S error`. CI runs on every push and PR, and weekly. `bin/ship.sh [patch|minor|major]` runs the tests, bumps `VERSION`, tags, and pushes. `release.yml` gates the GitHub release on the same suite. Each release ships a reproducible tarball, an SPDX 2.3 SBOM (`bin/loopwatch-sbom.sh`: every file with SHA1/SHA256, the runtime requirements, the pinned build actions) and `SHA256SUMS`. When the org plan allows it (attestations need a paid plan for private repos), the tarball and SBOM also carry a signed SLSA build-provenance attestation, which you can check with `gh attestation verify loopwatch-vX.Y.Z.tar.gz -R adventurewave-labs/loopwatch-v2`.
 
 ## Not in v0.2
 
