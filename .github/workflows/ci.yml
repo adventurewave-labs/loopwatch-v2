@@ -24,7 +24,9 @@ jobs:
       matrix:
         # macos-latest gates the BSD userland (sed/tail/date/wc differences);
         # ubuntu-latest gates the GNU side + is what the Codespace runs.
-        os: [ubuntu-latest, macos-latest]
+        # macOS runners bill 10x on private repos, so the BSD leg rides the
+        # weekly rot check (or a manual run) instead of every PR.
+        os: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && fromJSON('["ubuntu-latest", "macos-latest"]') || fromJSON('["ubuntu-latest"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
