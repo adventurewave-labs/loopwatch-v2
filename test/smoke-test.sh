@@ -1113,7 +1113,7 @@ grep -q 'actions/attest-build-provenance@[0-9a-f]\{40\} # v' "$SRC_ROOT/.github/
 # the SBOM: every shipped file with matching hashes, runtime deps, build actions, reproducible
 SOURCE_DATE_EPOCH=1790000000 bash "$SRC_ROOT/bin/loopwatch-sbom.sh" "$SRC_ROOT" > "$W/sbom.json" || fail "sbom generation failed"
 SOURCE_DATE_EPOCH=1790000000 bash "$SRC_ROOT/bin/loopwatch-sbom.sh" "$SRC_ROOT" | cmp -s - "$W/sbom.json" || fail "SBOM must be reproducible under SOURCE_DATE_EPOCH"
-n_git="$(git -C "$SRC_ROOT" ls-files 2>/dev/null | while IFS= read -r f; do [[ -f "$SRC_ROOT/$f" ]] && echo; done | wc -l | tr -d ' ')"
+n_git="$(git -C "$SRC_ROOT" ls-files 2>/dev/null | while IFS= read -r f; do [[ -f "$SRC_ROOT/$f" ]] && echo; done | wc -l | tr -d ' ' || true)"
 jq -e --arg v "$(cat "$SRC_ROOT/VERSION")" --argjson n "${n_git:-0}" '
   .spdxVersion == "SPDX-2.3" and .creationInfo.created == "2026-09-21T14:13:20Z"
   and (.packages[0] | .name == "loopwatch" and .versionInfo == $v and .licenseDeclared == "MIT"
