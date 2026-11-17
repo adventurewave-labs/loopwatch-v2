@@ -4,7 +4,7 @@
 
 Turns the day's Claude Code, Cowork and GitHub activity into a **private, searchable reference catalog**. Each run stays within a fixed token budget and is published through a **PR you merge**. Run it on demand from a session ("run loopwatch"), or opt in to a nightly schedule.
 
-> **Landing page:** https://adventurewave-labs.github.io/loopwatch-landing/
+> **Landing page:** https://adventurewave-labs.github.io/loopwatch-v2/
 
 ```
 ~/.claude/projects/*/*.jsonl ┐  allowlist (INCLUDE_PROJECTS) · self-exclusion · byte watermarks

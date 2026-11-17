@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>loopwatch — Adventure Wave Labs</title>
+<link rel="canonical" href="https://adventurewave-labs.github.io/loopwatch-v2/">
+<meta name="description" content="loopwatch turns the day's Claude Code, Cowork and GitHub activity into a private, searchable reference catalog — scrubbed before any model call, validated after, published only through a PR you merge.">
+<meta name="robots" content="index,follow">
+<meta property="og:title" content="loopwatch — privacy-gated activity catalog">
+<meta property="og:description" content="Sessions in, private catalog out. Scrubbed before the model, scanned after it, capped per run, and published only through a PR you merge.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://adventurewave-labs.github.io/loopwatch-v2/">
+<meta name="twitter:card" content="summary">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23070b10'/%3E%3Ccircle cx='16' cy='16' r='9' fill='none' stroke='%2338bdf8' stroke-width='2.4'/%3E%3Ccircle cx='16' cy='16' r='3.2' fill='%23fbbf24'/%3E%3Cpath d='M 16 7 A 9 9 0 0 1 25 16' fill='none' stroke='%23fbbf24' stroke-width='2.4' stroke-linecap='round'/%3E%3C/svg%3E">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#070b10;--ink:#e9eef5;--mut:#8fa0b4;--a1:#38bdf8;--a2:#fbbf24;--card:rgba(255,255,255,.035);--line:rgba(255,255,255,.09)}
+html{scroll-behavior:smooth}
+body{background:var(--bg);color:var(--ink);font-family:ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;line-height:1.55;-webkit-font-smoothing:antialiased}
+code,pre,.mono{font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace}
+.nav{position:sticky;top:0;z-index:9;display:flex;justify-content:space-between;align-items:center;padding:14px 28px;background:color-mix(in srgb,var(--bg) 82%,transparent);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.brand{display:flex;align-items:center;gap:9px;font-weight:650;letter-spacing:.2px;font-size:15px}
+.brand .dot{width:9px;height:9px;border-radius:50%;background:var(--a2);box-shadow:0 0 10px var(--a2);animation:pulse 3s ease-in-out infinite}
+@keyframes pulse{50%{opacity:.45}}
+.nav nav{display:flex;gap:8px;align-items:center}
+a{color:inherit;text-decoration:none}
+.btn{display:inline-flex;align-items:center;gap:7px;padding:8px 15px;border:1px solid var(--line);border-radius:9px;font-size:13.5px;font-weight:560;color:var(--ink);transition:border-color .18s,transform .18s,background .18s;background:transparent}
+.btn:hover{border-color:var(--a1);transform:translateY(-1px)}
+.btn.primary{background:linear-gradient(135deg,var(--a1),var(--a2));border:none;color:#04121a;font-weight:700}
+.btn.primary:hover{filter:brightness(1.1)}
+.hero{position:relative;min-height:clamp(440px,60vh,580px);display:flex;align-items:center;justify-content:center;overflow:hidden;text-align:center}
+.hero-art{position:absolute;inset:0}
+.hero-art svg{width:100%;height:100%;display:block}
+.hero-inner{position:relative;z-index:2;max-width:880px;padding:56px 26px 40px}
+.eyebrow{font-family:ui-monospace,Menlo,monospace;font-size:13px;letter-spacing:3px;text-transform:uppercase;color:var(--a1);opacity:.92}
+h1{font-size:clamp(42px,7.4vw,74px);font-weight:800;letter-spacing:-1px;margin:10px 0 14px;background:linear-gradient(100deg,var(--a1) 0%,#fff 52%,var(--a2) 100%);-webkit-background-clip:text;background-clip:text;color:transparent}
+.tagline{font-size:clamp(16px,2.3vw,19.5px);color:var(--mut);max-width:760px;margin:0 auto 22px}
+.tagline b{color:var(--a2);font-weight:600}
+.chips{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-bottom:26px}
+.chip{font-family:ui-monospace,Menlo,monospace;font-size:12px;padding:4px 11px;border:1px solid var(--line);border-radius:99px;color:var(--mut);background:rgba(255,255,255,.02)}
+.chip:hover{color:var(--a1);border-color:var(--a1)}
+.cta{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-bottom:30px}
+.stats{display:flex;gap:26px;justify-content:center;flex-wrap:wrap;font-size:13px;color:var(--mut)}
+.stats b{color:var(--ink);font-weight:640}
+main{max-width:1020px;margin:0 auto;padding:26px 26px 40px}
+section{margin:44px 0}
+h2{font-size:14px;font-family:ui-monospace,Menlo,monospace;letter-spacing:2.5px;text-transform:uppercase;color:var(--a1);margin-bottom:20px}
+h2::before{content:'// ';color:var(--mut)}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:22px;transition:transform .2s,border-color .2s}
+.card:hover{transform:translateY(-3px);border-color:color-mix(in srgb,var(--a1) 55%,var(--line))}
+.card h3{font-size:16px;margin-bottom:9px;color:var(--ink)}
+.card p{font-size:13.8px;color:var(--mut)}
+.card p b{color:var(--a2);font-weight:600}
+.evidence{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}
+.ev{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
+.ev .n{font-size:22px;font-weight:780;color:var(--a2);letter-spacing:-.5px}
+.ev .l{font-size:12px;color:var(--mut);margin-top:3px}
+.ev.blue .n{color:var(--a1)}
+.pipeline-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}
+.step{display:flex;gap:12px;align-items:baseline;background:var(--card);border:1px solid var(--line);border-radius:11px;padding:13px 16px}
+.step .k{font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--a2);letter-spacing:1.4px;min-width:86px}
+.step p{font-size:13px;color:var(--mut)}
+.cmds{border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.cmds .row{display:flex;gap:14px;align-items:baseline;padding:10px 16px;border-bottom:1px solid var(--line);background:var(--card)}
+.cmds .row:last-child{border-bottom:none}
+.cmds .c{font-family:ui-monospace,Menlo,monospace;font-size:13px;color:var(--a1);min-width:190px;white-space:nowrap}
+.cmds .d{font-size:13px;color:var(--mut)}
+.install pre{background:#0a0f16;border:1px solid var(--line);border-radius:12px;padding:16px 18px;display:flex;justify-content:space-between;align-items:center;gap:14px;overflow:auto}
+.install pre + pre{margin-top:10px}
+.install code{font-size:14px;color:var(--a1);white-space:nowrap}
+.install .copy{border:1px solid var(--line);background:transparent;color:var(--mut);border-radius:8px;padding:6px 12px;font-size:12px;cursor:pointer;transition:all .15s;flex-shrink:0}
+.install .copy:hover{color:var(--a1);border-color:var(--a1)}
+.links{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}
+.links a{display:flex;justify-content:space-between;align-items:center;padding:13px 16px;border:1px solid var(--line);border-radius:11px;font-size:13.5px;background:var(--card);transition:border-color .15s,transform .15s}
+.links a:hover{border-color:var(--a1);transform:translateX(3px)}
+.links a span.arr{color:var(--a1)}
+.note{font-size:12.5px;color:var(--mut);margin-top:12px}
+footer{border-top:1px solid var(--line);padding:30px 26px 44px;text-align:center;color:var(--mut);font-size:13px}
+footer .orgs{display:flex;gap:18px;justify-content:center;flex-wrap:wrap;margin-bottom:12px}
+footer a:hover{color:var(--a1)}
+@media(max-width:640px){.nav{padding:12px 16px}.hero-inner{padding:44px 18px 32px}.stats{gap:14px}.cmds .c{min-width:150px}}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms !important;animation-iteration-count:1 !important;transition:none !important}}
+</style>
+</head>
+<body>
+<header class="nav">
+  <div class="brand"><span class="dot"></span>loopwatch</div>
+  <nav>
+    <a class="btn" href="https://github.com/adventurewave-labs">Adventure Wave Labs</a>
+    <a class="btn primary" href="https://github.com/adventurewave-labs/loopwatch-v2">GitHub ↗</a>
+  </nav>
+</header>
+<section class="hero">
+<div class="hero-art">
+<svg viewBox="0 0 1200 460" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+<defs>
+<radialGradient id="lamp" cx="0.5" cy="0.35" r="0.75"><stop offset="0" stop-color="#38bdf8" stop-opacity="0.13"/><stop offset="1" stop-color="#38bdf8" stop-opacity="0"/></radialGradient>
+<radialGradient id="lamp2" cx="0.2" cy="0.2" r="0.6"><stop offset="0" stop-color="#fbbf24" stop-opacity="0.12"/><stop offset="1" stop-color="#fbbf24" stop-opacity="0"/></radialGradient>
+<linearGradient id="fade" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#070b10" stop-opacity="0"/><stop offset="1" stop-color="#070b10"/></linearGradient>
+<linearGradient id="cur" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#fbbf24" stop-opacity=".85"/><stop offset="1" stop-color="#fbbf24" stop-opacity="0"/></linearGradient>
+<filter id="gl"><feGaussianBlur stdDeviation="3"/></filter>
+<filter id="gl2"><feGaussianBlur stdDeviation="5"/></filter>
+<pattern id="dots" width="24" height="24" patternUnits="userSpaceOnUse"><circle cx="1.2" cy="1.2" r="1.2" fill="#38bdf8" opacity=".09"/></pattern>
+</defs>
+<rect width="1200" height="460" fill="#070b10"/>
+<rect width="1200" height="460" fill="url(#dots)"/>
+<rect width="1200" height="460" fill="url(#lamp)"><animate attributeName="opacity" values=".7;1;.7" dur="11s" repeatCount="indefinite"/></rect>
+<rect width="1200" height="460" fill="url(#lamp2)"><animate attributeName="opacity" values="1;.6;1" dur="14s" repeatCount="indefinite"/></rect>
+
+<!-- watch ring: the loop, swept like a scan -->
+<g transform="translate(600,150)">
+  <circle r="104" fill="none" stroke="#13202f" stroke-width="1.6"/>
+  <circle r="104" fill="none" stroke="#38bdf8" stroke-width="1.6" stroke-dasharray="140 514" stroke-linecap="round" opacity=".55" transform="rotate(-90)">
+    <animateTransform attributeName="transform" type="rotate" from="-90" to="270" dur="9s" repeatCount="indefinite" additive="sum"/>
+  </circle>
+  <circle r="86" fill="none" stroke="#13202f" stroke-width="1"/>
+  <circle r="6" fill="#fbbf24" filter="url(#gl2)"/>
+  <line x1="0" y1="0" x2="0" y2="-104" stroke="#fbbf24" stroke-width="1.4" filter="url(#gl)" opacity=".7">
+    <animateTransform attributeName="transform" type="rotate" from="0" to="360" dur="9s" repeatCount="indefinite"/>
+  </line>
+</g>
+
+<!-- session lines drifting through the ring, redacting as they pass -->
+<g fill="#1c2736">
+  <rect x="330" y="120" width="150" height="10" rx="2"><animate attributeName="opacity" values=".2;.6;.2" dur="8s" begin="0s" repeatCount="indefinite"/></rect>
+  <rect x="740" y="140" width="120" height="10" rx="2"><animate attributeName="opacity" values=".2;.6;.2" dur="8s" begin="2.5s" repeatCount="indefinite"/></rect>
+  <rect x="350" y="170" width="110" height="10" rx="2"><animate attributeName="opacity" values=".2;.6;.2" dur="8s" begin="4.5s" repeatCount="indefinite"/></rect>
+  <rect x="760" y="185" width="90" height="10" rx="2"><animate attributeName="opacity" values=".2;.6;.2" dur="8s" begin="6s" repeatCount="indefinite"/></rect>
+</g>
+<g fill="#fbbf24" filter="url(#gl)">
+  <rect x="806" y="120" width="46" height="10" rx="2"><animate attributeName="opacity" values=".15;1;.15" dur="8s" begin="1s" repeatCount="indefinite"/></rect>
+  <rect x="620" y="140" width="46" height="10" rx="2"><animate attributeName="opacity" values=".15;1;.15" dur="8s" begin="3.4s" repeatCount="indefinite"/></rect>
+  <rect x="486" y="170" width="46" height="10" rx="2"><animate attributeName="opacity" values=".15;1;.15" dur="8s" begin="5.5s" repeatCount="indefinite"/></rect>
+  <rect x="720" y="185" width="46" height="10" rx="2"><animate attributeName="opacity" values=".15;1;.15" dur="8s" begin="7.2s" repeatCount="indefinite"/></rect>
+</g>
+
+<!-- pipeline beam along the bottom -->
+<path d="M 0 330 L 1200 330" stroke="#1b2635" stroke-width="1.3"/>
+<path d="M 0 330 L 1200 330" stroke="#38bdf8" stroke-width="1.3" stroke-dasharray="3 26" opacity=".4"><animate attributeName="stroke-dashoffset" from="0" to="-232" dur="6s" repeatCount="indefinite"/></path>
+<circle r="3.4" fill="#fbbf24" filter="url(#gl2)"><animateMotion path="M 0 330 L 1200 330" dur="7s" repeatCount="indefinite"/></circle>
+<circle r="2.8" fill="#38bdf8" filter="url(#gl)"><animateMotion path="M 0 330 L 1200 330" dur="11s" begin="3s" repeatCount="indefinite"/></circle>
+
+<!-- scrub cursor sweeping the whole canvas -->
+<rect x="0" y="0" width="1200" height="18" fill="url(#cur)" opacity=".18"><animate attributeName="y" values="0;442;0" keyTimes="0;.5;1" dur="12s" repeatCount="indefinite"/></rect>
+
+<rect y="370" width="1200" height="90" fill="url(#fade)"/>
+</svg></div>
+<div class="hero-inner">
+  <div class="eyebrow">adventurewave-labs · privacy-gated activity catalog</div>
+  <h1>loopwatch</h1>
+  <p class="tagline">The day's Claude Code, Cowork and GitHub activity — scrubbed <b>before</b> any model call, scanned <b>after</b> it, budget-capped, and published only through <b>a PR you merge</b>. A private, searchable reference catalog of your own work.</p>
+  <div class="chips"><span class="chip">claude-code</span><span class="chip">cowork</span><span class="chip">github</span><span class="chip">haiku-triage</span><span class="chip">sonnet-write</span><span class="chip">scrubber</span><span class="chip">pr-gated</span><span class="chip">launchd</span><span class="chip">bash-3.2</span></div>
+  <div class="cta"><a class="btn primary" href="https://github.com/adventurewave-labs/loopwatch-v2">View on GitHub ↗</a><a class="btn" href="https://github.com/adventurewave-labs/loopwatch-v2/releases/tag/v0.2.1">Release v0.2.1</a></div>
+  <div class="stats"><span>release <b>v0.2.1</b></span><span><b>69</b> smoke cases green</span><span><b>100%</b> mutation kill</span><span><b>$0.158</b> measured 3-page day</span></div>
+</div>
+</section>
+<main>
+
+<section id="what"><h2>What it does</h2><div class="cards"><div class="card"><h3>Private by construction</h3><p>Allowlist first: an empty <b>INCLUDE_PROJECTS</b> reads nothing, GitHub included. Secrets are scrubbed before any model sees text, pages are re-scanned after, and the validator drops anything with scripts, handlers or external loads.</p></div><div class="card"><h3>Two-stage cost floor</h3><p>Haiku triages everything; sonnet runs only on cited excerpts when candidates exist. Runs stop before any call on quiet days, and <b>BUDGET_USD</b> / <b>MAX_BUNDLE_KB</b> / a monthly cap fail closed.</p></div><div class="card"><h3>You are the publisher</h3><p>Nothing ships itself. Every run becomes a branch and <b>a PR you merge</b>; closing a PR discards it forever. The catalog serves behind Basic Auth that fails closed — 503 until credentials exist.</p></div></div></section>
+
+<section id="privacy"><h2>Privacy is enforced, not advised</h2>
+<div class="evidence">
+<div class="ev blue"><div class="n">allowlist</div><div class="l">only INCLUDE_PROJECTS is read; excludes win; the catalog repo is never re-read</div></div>
+<div class="ev"><div class="n">scrub → model</div><div class="l">sk- keys, GitHub/AWS/Stripe tokens, JWTs, PEM, bearer, connection strings, emails — plus your redact.list</div></div>
+<div class="ev blue"><div class="n">model → scan</div><div class="l">pages, titles, summaries and tags re-scanned with the same rules; any hit drops the page</div></div>
+<div class="ev"><div class="n">--tools ""</div><div class="l">neither model call gets a tool; it sees only the stdin loopwatch puts there, fenced as data</div></div>
+<div class="ev blue"><div class="n">firewall</div><div class="l">validator drops script/on*/iframe/embed/form/meta-http-equiv, external and javascript: URLs, CSS url()</div></div>
+<div class="ev"><div class="n">fail closed</div><div class="l">catalog 503s until CATALOG_USER/PASSWORD exist; publishing refuses unless SITE_VISIBILITY=protected</div></div>
+</div>
+<p class="note">Byte-offset watermarks stop at the last newline, carry a first-bytes fingerprint, and are property-tested for exactly-once delivery across append, truncate, rotate and failed-run sequences.</p>
+</section>
+
+<section id="pipeline"><h2>The pipeline</h2><div class="pipeline-list">
+<div class="step"><span class="k">COLLECT</span><p>Allowlisted Claude Code / Cowork transcripts + GitHub commits and merged PRs. Byte watermarks, bundle cap, oldest trimmed first.</p></div>
+<div class="step"><span class="k">SCRUB</span><p>Built-in secret patterns + your gitignored redact.list, case-insensitive, applied to every line before anything leaves the machine.</p></div>
+<div class="step"><span class="k">TRIAGE</span><p>Stage A — haiku, read-only, tool-free: digest + 0..5 candidates with line-range evidence. Zero candidates → stop, no Stage B.</p></div>
+<div class="step"><span class="k">WRITE</span><p>Stage B — sonnet sees only the cited excerpts, schema-constrained. Page HTML is rendered by loopwatch, never by the model.</p></div>
+<div class="step"><span class="k">VALIDATE</span><p>Page firewall + post-scan for secrets and redact.list hits. Drops are counted in the ledger without the matched text.</p></div>
+<div class="step"><span class="k">PUBLISH</span><p>A loopwatch/&lt;date&gt;-&lt;time&gt; branch and a PR — one open PR at a time, closed PRs never re-proposed. Railway serves main behind auth.</p></div>
+</div></section>
+
+<section id="commands"><h2>Commands</h2><div class="cmds">
+<div class="row"><span class="c">loopwatch run</span><span class="d">collect → triage → write → validate → PR. <span class="mono">--export-md DIR</span> for Markdown</span></div>
+<div class="row"><span class="c">loopwatch dry-run</span><span class="d">the same, without publishing — the run dir is kept for inspection</span></div>
+<div class="row"><span class="c">loopwatch sources</span><span class="d">every candidate source with <span class="mono">include</span> / <span class="mono">skip:self</span> / <span class="mono">skip:not-allowlisted</span></span></div>
+<div class="row"><span class="c">loopwatch preflight</span><span class="d">PASS/WARN/FAIL privacy + visibility checks; exits non-zero on any FAIL</span></div>
+<div class="row"><span class="c">loopwatch ledger [N]</span><span class="d">last N runs, totals, median cost of runs that made model calls</span></div>
+<div class="row"><span class="c">loopwatch doctor</span><span class="d">one OK/WARN/FAIL line each: config, redact mode, deps, last run, privacy self-test, monthly spend, anomalies, prompt drift. Exits 1 on FAIL — cron-gateable</span></div>
+<div class="row"><span class="c">loopwatch schedule install 21 30</span><span class="d">opt-in nightly launchd job; <span class="mono">remove</span> undoes it</span></div>
+</div></section>
+
+<section id="install"><h2>Install (Mac)</h2><div class="install">
+<pre><code>gh repo clone adventurewave-labs/loopwatch-v2 ~/.local/share/loopwatch</code><button class="copy" onclick="navigator.clipboard.writeText('gh repo clone adventurewave-labs/loopwatch-v2 ~/.local/share/loopwatch');this.textContent='copied ✓';setTimeout(()=>this.textContent='copy',1400)">copy</button></pre>
+<pre><code>~/.local/share/loopwatch/bin/install.sh</code><button class="copy" onclick="navigator.clipboard.writeText('~/.local/share/loopwatch/bin/install.sh');this.textContent='copied ✓';setTimeout(()=>this.textContent='copy',1400)">copy</button></pre>
+<pre><code>$EDITOR ~/.config/loopwatch/loopwatch.conf   # INCLUDE_PROJECTS: empty means nothing is collected</code><button class="copy" onclick="navigator.clipboard.writeText('$EDITOR ~/.config/loopwatch/loopwatch.conf');this.textContent='copied ✓';setTimeout(()=>this.textContent='copy',1400)">copy</button></pre>
+<pre><code>loopwatch sources &amp;&amp; loopwatch preflight     # what would be read, and why</code><button class="copy" onclick="navigator.clipboard.writeText('loopwatch sources &amp;&amp; loopwatch preflight');this.textContent='copied ✓';setTimeout(()=>this.textContent='copy',1400)">copy</button></pre>
+<pre><code>loopwatch dry-run                            # the whole pipeline, nothing published</code><button class="copy" onclick="navigator.clipboard.writeText('loopwatch dry-run');this.textContent='copied ✓';setTimeout(()=>this.textContent='copy',1400)">copy</button></pre>
+</div>
+<p class="note">Needs bash (stock 3.2 is fine), jq, git, an authenticated gh, and the claude CLI. Installs no schedule. From a session, just ask: <span class="mono">"run loopwatch"</span>.</p>
+</section>
+
+<section id="cost"><h2>Measured, not estimated</h2>
+<p style="font-size:14px;color:var(--mut);max-width:760px;margin-bottom:18px">Structured mode on claude 2.1.283, same sample day, dry runs: a <b style="color:var(--a2)">3-page day cost $0.158 in 69s</b> ($0.057 haiku + $0.101 sonnet). The earlier agentic mode produced 1 page for $0.376 — about <b style="color:var(--a2)">83% less per page</b>. Each call has a fixed floor of ~$0.013–0.018.</p>
+<div class="evidence">
+<div class="ev"><div class="n">$0.158</div><div class="l">3-page day, structured mode</div></div>
+<div class="ev blue"><div class="n">−83%</div><div class="l">per page vs the agentic mode</div></div>
+<div class="ev"><div class="n">0 calls</div><div class="l">quiet days stop below ACTIVITY_MIN_BYTES</div></div>
+<div class="ev blue"><div class="n">fails closed</div><div class="l">budget-exhausted runs publish nothing</div></div>
+</div>
+<p class="note">Every run appends one JSON line to <span class="mono">runs.jsonl</span> — tokens, cost, pages, skip reason — and optional OpenTelemetry spans carry counts and costs only, never content.</p>
+</section>
+
+<section id="explore"><h2>Explore</h2><div class="links">
+<a href="https://github.com/adventurewave-labs/loopwatch-v2#readme">README <span class="arr">→</span></a>
+<a href="https://github.com/adventurewave-labs/loopwatch-v2/releases/tag/v0.2.1">Release v0.2.1 <span class="arr">→</span></a>
+<a href="https://github.com/adventurewave-labs/loopwatch-v2/blob/main/docs/manifest-schema.md">manifest.json schema <span class="arr">→</span></a>
+<a href="https://github.com/adventurewave-labs/loopwatch-v2/blob/main/docs/revival-notes.md">revival notes <span class="arr">→</span></a>
+<a href="https://github.com/adventurewave-labs/loopwatch-v2/blob/main/LICENSE">MIT license <span class="arr">→</span></a>
+</div></section>
+</main>
+<footer>
+<div class="orgs">
+<a href="https://github.com/marcuspat">marcuspat</a>
+<a href="https://github.com/adventurewave-labs">adventurewave-labs</a>
+<a href="https://github.com/creandotumatrix-labs">creandotumatrix-labs</a>
+</div>
+<div>© Adventure Wave Labs · static page · no requests, no JS beyond copy buttons</div>
+</footer>
+</body>
+</html>
