@@ -1,0 +1,191 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 400" font-family="ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" role="img" aria-label="loopwatch — sessions become a private, searchable catalog: collect, scrub, triage, write, validate, publish, catalog">
+  <title>loopwatch — sessions → private catalog, published only through a PR you merge</title>
+  <defs>
+    <linearGradient id="tg" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#38bdf8"/><stop offset=".52" stop-color="#e9eef5"/><stop offset="1" stop-color="#fbbf24"/>
+    </linearGradient>
+    <linearGradient id="scrubGlow" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fbbf24" stop-opacity=".9"/><stop offset="1" stop-color="#fbbf24" stop-opacity="0"/>
+    </linearGradient>
+    <pattern id="dots" width="22" height="22" patternUnits="userSpaceOnUse">
+      <circle cx="1.2" cy="1.2" r="1.2" fill="#38bdf8" opacity=".08"/>
+    </pattern>
+    <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="3"/>
+    </filter>
+    <filter id="glow2" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="5"/>
+    </filter>
+  </defs>
+
+  <!-- ground -->
+  <rect width="1200" height="400" fill="#070b10"/>
+  <rect width="1200" height="400" fill="url(#dots)"/>
+
+  <!-- marching border -->
+  <rect x="7" y="7" width="1186" height="386" rx="16" fill="none" stroke="#1b2635" stroke-width="1.6"/>
+  <rect x="7" y="7" width="1186" height="386" rx="16" fill="none" stroke="#38bdf8" stroke-width="1.6"
+        stroke-dasharray="26 318" stroke-linecap="round" opacity=".8">
+    <animate attributeName="stroke-dashoffset" from="0" to="-688" dur="13s" repeatCount="indefinite"/>
+  </rect>
+  <rect x="7" y="7" width="1186" height="386" rx="16" fill="none" stroke="#fbbf24" stroke-width="1.6"
+        stroke-dasharray="12 332" stroke-linecap="round" opacity=".55">
+    <animate attributeName="stroke-dashoffset" from="-344" to="0" dur="13s" repeatCount="indefinite"/>
+  </rect>
+
+  <!-- title block -->
+  <text x="42" y="42" font-family="ui-monospace,'SF Mono',Menlo,Consolas,monospace" font-size="11.5" letter-spacing="3.4" fill="#38bdf8" opacity=".92">ADVENTUREWAVE LABS · PRIVACY-GATED ACTIVITY CATALOG</text>
+  <text x="40" y="86" font-size="40" font-weight="800" letter-spacing="-1" fill="url(#tg)">loopwatch</text>
+  <text x="42" y="112" font-family="ui-monospace,'SF Mono',Menlo,monospace" font-size="12.5" fill="#8fa0b4">the day's sessions → a private, searchable catalog — <tspan fill="#fbbf24">published only through a PR you merge</tspan></text>
+
+  <!-- ============ pipeline ============ -->
+  <g font-family="ui-monospace,'SF Mono',Menlo,Consolas,monospace">
+    <!-- connector -->
+    <path d="M 114 168 L 1160 168" stroke="#1b2635" stroke-width="1.4"/>
+    <path d="M 114 168 L 1160 168" stroke="#38bdf8" stroke-width="1.4" stroke-dasharray="3 26" opacity=".35">
+      <animate attributeName="stroke-dashoffset" from="0" to="-232" dur="6s" repeatCount="indefinite"/>
+    </path>
+
+    <!-- 7 stage nodes, activation wave travels left→right -->
+    <g>
+      <g><rect x="40" y="146" width="148" height="44" rx="9"/>
+        <animate attributeName="stroke" values="#223047;#38bdf8;#38bdf8;#223047" keyTimes="0;.08;.55;1" dur="14s" begin="0s" repeatCount="indefinite"/>
+        <animate attributeName="stroke-width" values="1.4;2;2;1.4" keyTimes="0;.08;.55;1" dur="14s" begin="0s" repeatCount="indefinite"/>
+        <animate attributeName="fill" values="#0c121c;#0e1a29;#0e1a29;#0c121c" keyTimes="0;.08;.55;1" dur="14s" begin="0s" repeatCount="indefinite"/>
+      </g>
+      <g><rect x="202" y="146" width="148" height="44" rx="9"/>
+        <animate attributeName="stroke" values="#223047;#fbbf24;#fbbf24;#223047" keyTimes="0;.08;.55;1" dur="14s" begin="2s" repeatCount="indefinite"/>
+        <animate attributeName="stroke-width" values="1.4;2;2;1.4" keyTimes="0;.08;.55;1" dur="14s" begin="2s" repeatCount="indefinite"/>
+        <animate attributeName="fill" values="#0c121c;#1a1508;#1a1508;#0c121c" keyTimes="0;.08;.55;1" dur="14s" begin="2s" repeatCount="indefinite"/>
+      </g>
+      <g><rect x="364" y="146" width="148" height="44" rx="9"/>
+        <animate attributeName="stroke" values="#223047;#38bdf8;#38bdf8;#223047" keyTimes="0;.08;.55;1" dur="14s" begin="4s" repeatCount="indefinite"/>
+        <animate attributeName="stroke-width" values="1.4;2;2;1.4" keyTimes="0;.08;.55;1" dur="14s" begin="4s" repeatCount="indefinite"/>
+        <animate attributeName="fill" values="#0c121c;#0e1a29;#0e1a29;#0c121c" keyTimes="0;.08;.55;1" dur="14s" begin="4s" repeatCount="indefinite"/>
+      </g>
+      <g><rect x="526" y="146" width="148" height="44" rx="9"/>
+        <animate attributeName="stroke" values="#223047;#38bdf8;#38bdf8;#223047" keyTimes="0;.08;.55;1" dur="14s" begin="6s" repeatCount="indefinite"/>
+        <animate attributeName="stroke-width" values="1.4;2;2;1.4" keyTimes="0;.08;.55;1" dur="14s" begin="6s" repeatCount="indefinite"/>
+        <animate attributeName="fill" values="#0c121c;#0e1a29;#0e1a29;#0c121c" keyTimes="0;.08;.55;1" dur="14s" begin="6s" repeatCount="indefinite"/>
+      </g>
+      <g><rect x="688" y="146" width="148" height="44" rx="9"/>
+        <animate attributeName="stroke" values="#223047;#38bdf8;#38bdf8;#223047" keyTimes="0;.08;.55;1" dur="14s" begin="8s" repeatCount="indefinite"/>
+        <animate attributeName="stroke-width" values="1.4;2;2;1.4" keyTimes="0;.08;.55;1" dur="14s" begin="8s" repeatCount="indefinite"/>
+        <animate attributeName="fill" values="#0c121c;#0e1a29;#0e1a29;#0c121c" keyTimes="0;.08;.55;1" dur="14s" begin="8s" repeatCount="indefinite"/>
+      </g>
+      <g><rect x="850" y="146" width="148" height="44" rx="9"/>
+        <animate attributeName="stroke" values="#223047;#fbbf24;#fbbf24;#223047" keyTimes="0;.08;.55;1" dur="14s" begin="10s" repeatCount="indefinite"/>
+        <animate attributeName="stroke-width" values="1.4;2;2;1.4" keyTimes="0;.08;.55;1" dur="14s" begin="10s" repeatCount="indefinite"/>
+        <animate attributeName="fill" values="#0c121c;#1a1508;#1a1508;#0c121c" keyTimes="0;.08;.55;1" dur="14s" begin="10s" repeatCount="indefinite"/>
+      </g>
+      <g><rect x="1012" y="146" width="148" height="44" rx="9"/>
+        <animate attributeName="stroke" values="#223047;#38bdf8;#38bdf8;#223047" keyTimes="0;.08;.55;1" dur="14s" begin="12s" repeatCount="indefinite"/>
+        <animate attributeName="stroke-width" values="1.4;2;2;1.4" keyTimes="0;.08;.55;1" dur="14s" begin="12s" repeatCount="indefinite"/>
+        <animate attributeName="fill" values="#0c121c;#0e1a29;#0e1a29;#0c121c" keyTimes="0;.08;.55;1" dur="14s" begin="12s" repeatCount="indefinite"/>
+      </g>
+    </g>
+
+    <g font-size="13.5" letter-spacing="1.6" text-anchor="middle" fill="#e9eef5">
+      <text x="114" y="169">COLLECT</text>
+      <text x="276" y="169" fill="#fbbf24">SCRUB</text>
+      <text x="438" y="169">TRIAGE</text>
+      <text x="600" y="169">WRITE</text>
+      <text x="762" y="169">VALIDATE</text>
+      <text x="924" y="169" fill="#fbbf24">PUBLISH</text>
+      <text x="1086" y="169">CATALOG</text>
+    </g>
+    <g font-size="9" letter-spacing=".5" text-anchor="middle" fill="#8fa0b4" opacity=".9">
+      <text x="114" y="182">jsonl · api</text>
+      <text x="276" y="182" fill="#d9a93f">secrets out</text>
+      <text x="438" y="182">haiku · read-only</text>
+      <text x="600" y="182">sonnet · excerpts</text>
+      <text x="762" y="182">no scripts · post-scan</text>
+      <text x="924" y="182" fill="#d9a93f">PR you merge</text>
+      <text x="1086" y="182">auth · railway</text>
+    </g>
+
+    <!-- packets flowing along the connector -->
+    <circle r="3.2" fill="#fbbf24" filter="url(#glow2)">
+      <animateMotion path="M 114 168 L 1160 168" dur="7s" begin="0s" repeatCount="indefinite"/>
+    </circle>
+    <circle r="2.6" fill="#38bdf8" filter="url(#glow)">
+      <animateMotion path="M 114 168 L 1160 168" dur="10s" begin="2.4s" repeatCount="indefinite"/>
+    </circle>
+    <circle r="2.6" fill="#38bdf8" filter="url(#glow)">
+      <animateMotion path="M 114 168 L 1160 168" dur="13s" begin="5.1s" repeatCount="indefinite"/>
+    </circle>
+  </g>
+
+  <!-- ============ bottom-left: stat chips ============ -->
+  <g font-family="ui-monospace,'SF Mono',Menlo,Consolas,monospace" font-size="12">
+    <g>
+      <rect x="42" y="222" width="200" height="30" rx="8" fill="#0c121c" stroke="#1b2635"/>
+      <text x="58" y="242" fill="#38bdf8" font-weight="700">69</text><text x="88" y="242" fill="#8fa0b4">smoke cases green</text>
+      <animate attributeName="opacity" values=".85;1;1;.85" dur="6s" repeatCount="indefinite"/>
+    </g>
+    <g>
+      <rect x="252" y="222" width="200" height="30" rx="8" fill="#0c121c" stroke="#1b2635"/>
+      <text x="268" y="242" fill="#fbbf24" font-weight="700">100%</text><text x="322" y="242" fill="#8fa0b4">mutation kill</text>
+    </g>
+    <g>
+      <rect x="42" y="260" width="200" height="30" rx="8" fill="#0c121c" stroke="#1b2635"/>
+      <text x="58" y="280" fill="#38bdf8" font-weight="700">2-stage</text><text x="126" y="280" fill="#8fa0b4">haiku → sonnet</text>
+    </g>
+    <g>
+      <rect x="252" y="260" width="216" height="30" rx="8" fill="#0c121c" stroke="#1b2635"/>
+      <text x="268" y="280" fill="#fbbf24" font-weight="700">$ cap</text><text x="322" y="280" fill="#8fa0b4">budget fails closed</text>
+    </g>
+  </g>
+
+  <!-- ============ bottom-right: session scrub panel ============ -->
+  <g>
+    <text x="628" y="216" font-family="ui-monospace,'SF Mono',Menlo,Consolas,monospace" font-size="10.5" letter-spacing="2.6" fill="#8fa0b4" opacity=".85">SESSION SCRUB · secrets never reach the model</text>
+    <g stroke="#0a0f16">
+      <rect x="628" y="224" width="532" height="26" fill="#111826"/>
+      <rect x="628" y="250" width="532" height="26" fill="#0e1520"/>
+      <rect x="628" y="276" width="532" height="26" fill="#131a28"/>
+      <rect x="628" y="302" width="532" height="26" fill="#0e1520"/>
+      <rect x="628" y="328" width="532" height="26" fill="#111826"/>
+    </g>
+
+    <!-- plain session tokens -->
+    <g fill="#1c2736">
+      <rect x="640" y="231" width="96" height="11" rx="2"/><rect x="744" y="231" width="58" height="11" rx="2"/><rect x="810" y="231" width="140" height="11" rx="2"/><rect x="958" y="231" width="72" height="11" rx="2"/>
+      <rect x="640" y="257" width="150" height="11" rx="2"/><rect x="798" y="257" width="88" height="11" rx="2"/><rect x="894" y="257" width="52" height="11" rx="2"/><rect x="954" y="257" width="126" height="11" rx="2"/>
+      <rect x="640" y="283" width="70" height="11" rx="2"/><rect x="718" y="283" width="120" height="11" rx="2"/><rect x="846" y="283" width="64" height="11" rx="2"/><rect x="918" y="283" width="150" height="11" rx="2"/>
+      <rect x="640" y="309" width="110" height="11" rx="2"/><rect x="758" y="309" width="66" height="11" rx="2"/><rect x="832" y="309" width="148" height="11" rx="2"/><rect x="988" y="309" width="90" height="11" rx="2"/>
+      <rect x="640" y="335" width="84" height="11" rx="2"/><rect x="732" y="335" width="130" height="11" rx="2"/><rect x="870" y="335" width="58" height="11" rx="2"/><rect x="936" y="335" width="142" height="11" rx="2"/>
+    </g>
+
+    <!-- redactions: amber bars light up as the scrub cursor passes -->
+    <g fill="#fbbf24">
+      <g><rect x="1092" y="231" width="56" height="11" rx="2" filter="url(#glow)"><animate attributeName="opacity" values=".15;1;1;.15" keyTimes="0;.1;.6;1" dur="9s" begin="0s" repeatCount="indefinite"/></rect></g>
+      <g><rect x="802" y="257" width="80" height="11" rx="2" filter="url(#glow)"><animate attributeName="opacity" values=".15;1;1;.15" keyTimes="0;.1;.6;1" dur="9s" begin="1.8s" repeatCount="indefinite"/></rect></g>
+      <g><rect x="1084" y="283" width="64" height="11" rx="2" filter="url(#glow)"><animate attributeName="opacity" values=".15;1;1;.15" keyTimes="0;.1;.6;1" dur="9s" begin="0.7s" repeatCount="indefinite"/></rect></g>
+      <g><rect x="836" y="309" width="60" height="11" rx="2" filter="url(#glow)"><animate attributeName="opacity" values=".15;1;1;.15" keyTimes="0;.1;.6;1" dur="9s" begin="3.6s" repeatCount="indefinite"/></rect></g>
+      <g><rect x="1088" y="335" width="60" height="11" rx="2" filter="url(#glow)"><animate attributeName="opacity" values=".15;1;1;.15" keyTimes="0;.1;.6;1" dur="9s" begin="5.1s" repeatCount="indefinite"/></rect></g>
+    </g>
+    <g font-family="ui-monospace,'SF Mono',Menlo,monospace" font-size="8.5" fill="#070b10" font-weight="700">
+      <g><text x="1100" y="239.5" opacity=".15"><animate attributeName="opacity" values="0;1;1;0" keyTimes="0;.1;.6;1" dur="9s" begin="0s" repeatCount="indefinite"/>██</text></g>
+      <g><text x="830" y="265.5" opacity=".15"><animate attributeName="opacity" values="0;1;1;0" keyTimes="0;.1;.6;1" dur="9s" begin="1.8s" repeatCount="indefinite"/>██</text></g>
+      <g><text x="1092" y="291.5" opacity=".15"><animate attributeName="opacity" values="0;1;1;0" keyTimes="0;.1;.6;1" dur="9s" begin="0.7s" repeatCount="indefinite"/>██</text></g>
+      <g><text x="856" y="317.5" opacity=".15"><animate attributeName="opacity" values="0;1;1;0" keyTimes="0;.1;.6;1" dur="9s" begin="3.6s" repeatCount="indefinite"/>██</text></g>
+      <g><text x="1096" y="343.5" opacity=".15"><animate attributeName="opacity" values="0;1;1;0" keyTimes="0;.1;.6;1" dur="9s" begin="5.1s" repeatCount="indefinite"/>██</text></g>
+    </g>
+
+    <!-- scrub cursor sweeping down -->
+    <g>
+      <rect x="628" y="218" width="532" height="14" fill="url(#scrubGlow)" opacity=".55">
+        <animate attributeName="y" values="218;354;218" keyTimes="0;.5;1" dur="9s" repeatCount="indefinite"/>
+      </rect>
+      <line x1="628" y1="225" x2="1160" y2="225" stroke="#fbbf24" stroke-width="1.6" filter="url(#glow)">
+        <animate attributeName="y1" values="225;361;225" keyTimes="0;.5;1" dur="9s" repeatCount="indefinite"/>
+        <animate attributeName="y2" values="225;361;225" keyTimes="0;.5;1" dur="9s" repeatCount="indefinite"/>
+      </line>
+    </g>
+    <text x="628" y="374" font-family="ui-monospace,'SF Mono',Menlo,monospace" font-size="10" fill="#8fa0b4" opacity=".7">redact.list · byte watermarks · budget-capped · zero model calls below the floor</text>
+  </g>
+
+  <!-- footer -->
+  <text x="42" y="378" font-family="ui-monospace,'SF Mono',Menlo,Consolas,monospace" font-size="11" fill="#8fa0b4" opacity=".85">github.com/adventurewave-labs/loopwatch-v2</text>
+</svg>
